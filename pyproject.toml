@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "linki"
+version = "0.1.0"
+description = "Linki — an Agentic RAG knowledge assistant (linki-agent-i backbone + hierarchical hybrid RAG)."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Agentic core (forked from linki-agent-i)
+    "langchain-core>=0.3",
+    "langchain-openai>=0.2",
+    "langgraph>=0.2",
+    "pydantic>=2",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "rich>=13.8",
+    "typer>=0.12",
+    # RAG stack (heavy; lazy-imported inside ingestion/retrieval)
+    "langchain-text-splitters>=0.3",
+    "langchain-qdrant>=0.2",
+    "qdrant-client>=1.12",
+    "fastembed>=0.4",          # local dense + sparse embeddings (ONNX, no torch)
+    "pymupdf4llm>=0.0.17",
+]
+
+[project.optional-dependencies]
+eval = ["ragas>=0.2", "tiktoken>=0.8"]
+ui = ["gradio>=5"]
+
+[project.scripts]
+linki = "linki.cli.app:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/linki"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.hatch.metadata]
+allow-direct-references = true

@@ -1,0 +1,37 @@
+# Linki configuration — copy to linki.yaml and edit. All fields are optional;
+# omitted fields fall back to the defaults in src/linki/config.py.
+#
+# Model provider and API keys live in .env (never here):
+#   OPENAI_API_KEY=sk-...        (or DEEPSEEK_API_KEY=...)
+#   LINKI_PROVIDER=openai        (openai | deepseek)
+#   LINKI_MODEL=gpt-4o-mini
+#   LINKI_JUDGE_MODEL=gpt-4o-mini   # verifier/grader; use a different model than LINKI_MODEL
+
+# —— retrieval & agentic loops ——
+retrieval_k: 5
+max_rounds: 2        # grader -> refine loop cap (per sub-query)
+max_attempts: 2      # verifier -> reflow cap (whole answer)
+
+# —— chunking ——
+child_chunk_size: 500
+child_chunk_overlap: 100
+min_parent_size: 2000
+max_parent_size: 4000
+
+# —— embeddings (local, no API) ——
+dense_model: BAAI/bge-small-en-v1.5   # via fastembed (ONNX, no torch)
+sparse_model: Qdrant/bm25
+
+# —— knowledge bases ——
+# The `usage_hint` is the ONLY routing signal the planner sees (Phase 3): write it
+# as "what this KB holds / which questions belong here".
+knowledge_bases:
+  - name: default
+    title: Default knowledge base
+    usage_hint: General ingested documents. Query here for anything not covered by a more specific base.
+  # - name: api
+  #   title: Framework API docs
+  #   usage_hint: FastAPI/Flask official docs. Come here for API usage, config params, deployment.
+  # - name: meetings
+  #   title: Meeting notes
+  #   usage_hint: Team meeting minutes. Come here for decisions, action items, discussions.

@@ -8,7 +8,12 @@ venv/
 qdrant_db/
 markdown_docs/
 parent_store/
-docs/
+.linki/
+*.egg-info/
+linki.yaml
+# Ignore docs/ contents but keep the Linki fusion design specs tracked.
+docs/*
+!docs/superpowers/
 
 notebooks/output.csv
 
