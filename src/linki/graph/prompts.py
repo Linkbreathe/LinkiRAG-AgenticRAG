@@ -45,7 +45,8 @@ Iron rules:
 1. Use ONLY facts from <evidence>. Never fill gaps with your own knowledge.
 2. End every claim with its source marker [n], where n is the evidence number.
 3. For anything the evidence does not cover, state explicitly: "知识库中未找到 …" \
-(Not found in the knowledge base: …).
+(Not found in the knowledge base: …). A "not found" sentence carries NO [n] marker \
+— only real, evidence-backed claims are cited.
 4. Every gap listed in <gaps> MUST be disclosed to the user.
 Output: the answer body, then a "Sources" list mapping [n] -> file · section."""
 
