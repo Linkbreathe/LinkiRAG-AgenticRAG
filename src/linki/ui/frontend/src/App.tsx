@@ -2,6 +2,7 @@ import * as Select from "@radix-ui/react-select";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import {
+  AlertTriangle,
   ArrowRight,
   Bot,
   Check,
@@ -9,21 +10,55 @@ import {
   Compass,
   Database,
   FileUp,
+  GitBranch,
   Loader2,
   MessageSquare,
   Plus,
   RefreshCw,
   Search,
   ShieldAlert,
+  ShieldCheck,
   Trash2,
   Upload
 } from "lucide-react";
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { clearTopic, createTopic, getTopics, sendChat, uploadDocuments } from "./api";
-import type { ChatMessage, ChatResponse, Topic } from "./types";
+import type { ChatMessage, ChatResponse, Topic, TraceStep } from "./types";
 
 function formatCount(value: number, singular: string, plural = `${singular}s`) {
   return `${value} ${value === 1 ? singular : plural}`;
+}
+
+function stepTone(step: TraceStep) {
+  if (step.kind === "verify" && step.status === "failed") return "danger";
+  if (step.kind === "grade" && step.status === "insufficient") return "warning";
+  if (step.kind === "retrieve" && step.status === "gaps") return "warning";
+  if (step.kind === "verify" && step.status === "passed") return "success";
+  return "neutral";
+}
+
+function formatTarget(target?: string) {
+  return (target || "selected topic").replace(/^Retrieve_/, "");
+}
+
+function runSummary(result: ChatResponse | null) {
+  const steps = result?.trace ?? [];
+  const planSteps = steps.filter((step) => step.kind === "plan");
+  const planCount = planSteps.reduce((sum, step) => sum + (step.sub_queries?.length ?? 0), 0);
+  const retrieveRounds = steps.filter((step) => step.kind === "retrieve" && step.round).length;
+  const insufficientGrades = steps.filter((step) => step.kind === "grade" && step.status === "insufficient").length;
+  const verifySteps = steps.filter((step) => step.kind === "verify");
+  const lastVerify = verifySteps[verifySteps.length - 1];
+  const reflowed = verifySteps.some((step) => step.status === "failed") && planSteps.length > 1;
+
+  return {
+    planCount,
+    retrieveRounds,
+    insufficientGrades,
+    verification: lastVerify?.status ?? "pending",
+    reflowed,
+    citations: result?.citations.length ?? 0
+  };
 }
 
 function SelectBox({
@@ -123,6 +158,75 @@ function TopicItem({
   );
 }
 
+function RunSummary({ result }: { result: ChatResponse | null }) {
+  const summary = runSummary(result);
+  const verificationText =
+    summary.verification === "passed"
+      ? "Verified"
+      : summary.verification === "failed"
+        ? "Needs review"
+        : "No run";
+
+  return (
+    <div className="run-summary" aria-label="Latest run summary">
+      <div className="run-metric">
+        <GitBranch size={15} />
+        <span>Plan</span>
+        <strong>{summary.planCount || "—"}</strong>
+      </div>
+      <div className="run-metric">
+        <Search size={15} />
+        <span>Searches</span>
+        <strong>{summary.retrieveRounds || "—"}</strong>
+      </div>
+      <div className={summary.insufficientGrades ? "run-metric warning" : "run-metric"}>
+        <AlertTriangle size={15} />
+        <span>Refine</span>
+        <strong>{summary.insufficientGrades || "—"}</strong>
+      </div>
+      <div className={summary.verification === "failed" ? "run-metric danger" : "run-metric success"}>
+        {summary.verification === "failed" ? <ShieldAlert size={15} /> : <ShieldCheck size={15} />}
+        <span>{summary.reflowed ? "Reflowed" : "Verify"}</span>
+        <strong>{verificationText}</strong>
+      </div>
+      <div className="run-metric">
+        <MessageSquare size={15} />
+        <span>Cites</span>
+        <strong>{summary.citations || "—"}</strong>
+      </div>
+    </div>
+  );
+}
+
+function PlanRows({ result }: { result: ChatResponse | null }) {
+  const rows = (result?.trace ?? []).flatMap((step) => step.sub_queries ?? []);
+  if (!rows.length) {
+    return <div className="empty">No plan yet. Ask a question to see how Linki decomposes retrieval.</div>;
+  }
+
+  return (
+    <div className="plan-list">
+      {rows.map((item, index) => (
+        <div className="plan-row" key={`${item.id}-${item.query}-${index}`}>
+          <code>{item.id || `q${index + 1}`}</code>
+          <div>
+            <strong>{item.query}</strong>
+            <span>{item.reason || "Planned retrieval query"}</span>
+          </div>
+          <small>{formatTarget(item.target_kb)}</small>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StepIcon({ step }: { step: TraceStep }) {
+  const tone = stepTone(step);
+  if (tone === "danger") return <ShieldAlert size={11} />;
+  if (tone === "warning") return <AlertTriangle size={11} />;
+  return <Check size={11} />;
+}
+
 function TracePanel({ result }: { result: ChatResponse | null }) {
   if (!result?.trace.length) {
     return <div className="empty">Run a question to see routing, retrieval, grading, and verification steps.</div>;
@@ -130,16 +234,47 @@ function TracePanel({ result }: { result: ChatResponse | null }) {
 
   return (
     <div className="trace-list">
-      {result.trace.map((step, index) => (
-        <details className={`trace-step ${step.kind}`} key={`${step.title}-${index}`} open={index === result.trace.length - 1}>
+      {result.trace.map((step, index) => {
+        const tone = stepTone(step);
+        return (
+        <details
+          className={`trace-step ${step.kind} ${tone}`}
+          key={`${step.title}-${index}`}
+          open={index === result.trace.length - 1 || tone !== "neutral"}
+        >
           <summary>
             <span className="dot">
-              <Check size={11} />
+              <StepIcon step={step} />
             </span>
             <span>{step.title}</span>
             <small>{step.status}</small>
           </summary>
+          {step.sub_queries?.length ? (
+            <div className="plan-list inline-plan">
+              {step.sub_queries.map((item, itemIndex) => (
+                <div className="plan-row" key={`${item.id}-${itemIndex}`}>
+                  <code>{item.id || `q${itemIndex + 1}`}</code>
+                  <div>
+                    <strong>{item.query}</strong>
+                    <span>{item.reason || "Planned retrieval query"}</span>
+                  </div>
+                  <small>{formatTarget(item.target_kb)}</small>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <pre>{step.detail}</pre>
+          {step.issues?.length ? (
+            <div className="issue-list">
+              {step.issues.map((issue, issueIndex) => (
+                <div className="issue-row" key={`${issue.claim}-${issueIndex}`}>
+                  <strong>{issue.problem || "verification issue"}</strong>
+                  <span>{issue.claim || "Unsupported claim"}</span>
+                  {issue.fix_instruction ? <small>{issue.fix_instruction}</small> : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
           {step.hits?.length ? (
             <div className="hit-list">
               {step.hits.map((hit) => (
@@ -152,7 +287,8 @@ function TracePanel({ result }: { result: ChatResponse | null }) {
             </div>
           ) : null}
         </details>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -557,7 +693,7 @@ export function App() {
                     <h2 id="ask-heading">RAG</h2>
                     <p>
                       {currentSearchTopic
-                        ? `Searching ${currentSearchTopic.title} for grounded answers.`
+                        ? `Planning retrieval inside ${currentSearchTopic.title}, then checking evidence.`
                         : "Choose a topic before asking a question."}
                     </p>
                   </div>
@@ -583,7 +719,7 @@ export function App() {
                     <div className="welcome">
                       <MessageSquare size={28} />
                       <strong>Ask about your documents</strong>
-                      <span>Answers are constrained to the selected topic collection.</span>
+                      <span>Linki can split the question, refine weak searches, and verify the answer.</span>
                       <div className="prompt-row" aria-label="Suggested prompts">
                         {suggestedPrompts.map((prompt) => (
                           <button
@@ -631,17 +767,22 @@ export function App() {
                 <div className="panel-header compact">
                   <div>
                     <h2 id="inspect-heading">Inspect</h2>
-                    <p>Review the path from routing to evidence.</p>
+                    <p>Review how Linki planned, searched, graded, and verified this answer.</p>
                   </div>
                 </div>
+                <RunSummary result={lastResult} />
                 <Tabs.Root defaultValue="trace" className="tabs">
                   <Tabs.List className="tabs-list">
                     <Tabs.Trigger value="trace">Trace</Tabs.Trigger>
+                    <Tabs.Trigger value="plan">Plan</Tabs.Trigger>
                     <Tabs.Trigger value="evidence">Evidence</Tabs.Trigger>
                     <Tabs.Trigger value="sources">Sources</Tabs.Trigger>
                   </Tabs.List>
                   <Tabs.Content value="trace" className="tab-panel">
                     <TracePanel result={lastResult} />
+                  </Tabs.Content>
+                  <Tabs.Content value="plan" className="tab-panel">
+                    <PlanRows result={lastResult} />
                   </Tabs.Content>
                   <Tabs.Content value="evidence" className="tab-panel">
                     <EvidencePanel result={lastResult} />

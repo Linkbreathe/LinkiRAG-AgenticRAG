@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -100,8 +101,30 @@ def answer_question(
     judge: Any = None,
     session_context: str = "",
     app=None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Convenience one-shot: assemble initial state, invoke, return final state."""
+    """Convenience one-shot: assemble initial state, invoke, return final state.
+
+    Establishes the run-scoped observability context: a :class:`HookContext`
+    (Cache/Dedup/TraceLog) and, when tracing is enabled and ``settings`` exposes
+    a ``data_dir``, a :class:`Tracer` that persists a JSONL trace + timeline.md.
+    Both live in contextvars for the duration of the invoke and are torn down in
+    ``finally`` (the tracer's ``finalize`` renders the timeline).
+    """
+    import uuid
+
+    from linki.core.trace import Tracer, _current_tracer
+    from linki.hooks.base import _current_hooks
+    from linki.hooks.builtin import default_hooks
+
+    run_id = run_id or uuid.uuid4().hex[:12]
+    hook_ctx = default_hooks(settings, run_id=run_id)
+
+    tracer = None
+    data_dir = getattr(settings, "data_dir", None)
+    if getattr(settings, "enable_trace", True) and data_dir is not None:
+        tracer = Tracer(run_id, Path(data_dir) / "traces")
+
     app = app or build_workflow()
     initial: LinkiGraphState = {
         "question": question,
@@ -115,4 +138,13 @@ def answer_question(
         "gaps": [],
         "attempts": 0,
     }
-    return app.invoke(initial)
+
+    t_tok = _current_tracer.set(tracer)
+    h_tok = _current_hooks.set(hook_ctx)
+    try:
+        return app.invoke(initial)
+    finally:
+        _current_hooks.reset(h_tok)
+        if tracer is not None:
+            tracer.finalize()
+        _current_tracer.reset(t_tok)

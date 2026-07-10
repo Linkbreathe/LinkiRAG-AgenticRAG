@@ -5,6 +5,25 @@ from conftest import FakeLLM, FakeSettings, ev
 from linki.graph.workflow import answer_question, build_workflow
 
 
+def test_answer_question_writes_trace_and_engages_hooks(tmp_path):
+    s = FakeSettings()
+    s.data_dir = tmp_path
+    llm = FakeLLM(
+        router=lambda sy, h: json.dumps({"route": "retrieve", "reason": "kb"}),
+        grader=lambda sy, h: json.dumps({"sufficient": True, "relevant_chunk_ids": []}),
+        answer=lambda sy, h: "Answer [1].",
+        verifier=lambda sy, h: json.dumps({"passed": True, "issues": []}),
+    )
+    answer_question("q", model=llm, judge=llm, settings=s,
+                    retrieve_fn=lambda q, kb: [ev("a")], app=build_workflow())
+
+    traces = list((tmp_path / "traces").glob("*.jsonl"))
+    assert traces, "a JSONL trace file should be written for the run"
+    rows = [json.loads(l) for l in traces[0].read_text().splitlines() if l.strip()]
+    assert any(r.get("type") == "hook_retrieve" for r in rows), "TraceLogHook should have fired via the graph"
+    assert list((tmp_path / "traces").glob("*.timeline.md")), "timeline.md should be rendered on finalize"
+
+
 def _run(llm, retrieve_fn, **kw):
     return answer_question(
         "What is X?",

@@ -62,6 +62,10 @@ class Settings:
 
     # —— models ——
     dense_model: str = "BAAI/bge-small-en-v1.5"  # ~130MB via sentence-transformers
+    # e5-family models need "query: " / "passage: " prefixes; leave empty for
+    # bge and other models that don't. Query/passage must use the *same* model.
+    dense_query_prefix: str = ""
+    dense_passage_prefix: str = ""
     sparse_model: str = "Qdrant/bm25"
     provider: str = "openai"  # reuses linki provider factory (openai|deepseek)
     llm_model: str | None = None  # None -> provider default
@@ -73,6 +77,12 @@ class Settings:
     retrieval_score_threshold: float = 0.0
     max_rounds: int = 2  # grader -> refine loop cap (per sub-query)
     max_attempts: int = 2  # verifier -> reflow cap (whole answer)
+
+    # —— observability / hooks (Phase 6) ——
+    enable_cache: bool = True  # Pre: memoize identical (query, kb) fetches
+    enable_dedup: bool = True  # Post: drop parents already collected this run
+    enable_hook_trace: bool = True  # Post: emit retrieval events to the tracer
+    enable_trace: bool = True  # write per-run JSONL + timeline.md under data_dir
 
     # —— knowledge bases ——
     knowledge_bases: list[KnowledgeBase] = field(
@@ -153,9 +163,11 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
     kwargs: dict[str, Any] = {}
     for key in (
         "child_chunk_size", "child_chunk_overlap", "min_parent_size",
-        "max_parent_size", "sparse_vector_name", "dense_model", "sparse_model",
+        "max_parent_size", "sparse_vector_name", "dense_model",
+        "dense_query_prefix", "dense_passage_prefix", "sparse_model",
         "provider", "llm_model", "judge_provider", "judge_model",
         "retrieval_k", "retrieval_score_threshold", "max_rounds", "max_attempts",
+        "enable_cache", "enable_dedup", "enable_hook_trace", "enable_trace",
     ):
         if key in data:
             kwargs[key] = data[key]

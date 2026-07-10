@@ -69,13 +69,14 @@ def test_relevant_ids_filter_noise():
     assert {e["chunk_id"] for e in out["evidence"]} == {"keep"}
 
 
-def test_grader_fallback_on_bad_json_does_not_stall():
+def test_grader_fallback_on_bad_json_fails_closed_but_preserves_evidence():
     def retrieve_fn(query, kb):
         return [ev("a")]
 
     out = retrieval_node(_state(retrieve_fn, FakeLLM(grader=lambda s, h: "not json at all")))
-    # fallback treats as sufficient, keeps evidence, no gaps
-    assert out["evidence"] and out["gaps"] == []
+    # Evidence remains available, but invalid grading is surfaced as a gap.
+    assert out["evidence"]
+    assert "invalid verdict" in out["gaps"][0]
 
 
 def test_target_kb_is_passed_to_retriever():

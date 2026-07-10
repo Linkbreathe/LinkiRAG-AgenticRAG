@@ -922,7 +922,7 @@ input:focus-visible,
 
 .tabs-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   background: var(--surface);
@@ -951,7 +951,66 @@ input:focus-visible,
   overflow: auto;
 }
 
+.run-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin: -4px 0 14px;
+}
+
+.run-metric {
+  min-width: 0;
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-content: center;
+  gap: 4px 7px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--surface);
+  padding: 9px;
+  color: var(--muted);
+}
+
+.run-metric svg {
+  grid-row: span 2;
+  color: var(--accent);
+  margin-top: 1px;
+}
+
+.run-metric span,
+.run-metric strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-metric span {
+  font-size: 0.68rem;
+  font-weight: 760;
+}
+
+.run-metric strong {
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+.run-metric.success svg {
+  color: var(--success);
+}
+
+.run-metric.warning svg {
+  color: var(--gold);
+}
+
+.run-metric.danger svg {
+  color: var(--danger);
+}
+
 .trace-list,
+.plan-list,
 .evidence-list,
 .source-list {
   display: grid;
@@ -968,6 +1027,16 @@ input:focus-visible,
 
 .trace-step {
   padding: 10px 12px;
+}
+
+.trace-step.warning {
+  border-color: oklch(83% 0.07 89);
+  background: var(--gold-soft);
+}
+
+.trace-step.danger {
+  border-color: oklch(78% 0.08 27);
+  background: var(--danger-soft);
 }
 
 .trace-step summary {
@@ -1002,6 +1071,21 @@ input:focus-visible,
   color: var(--success);
 }
 
+.trace-step.neutral .dot {
+  background: var(--surface-strong);
+  color: var(--muted);
+}
+
+.trace-step.warning .dot {
+  background: var(--gold-soft);
+  color: oklch(52% 0.13 89);
+}
+
+.trace-step.danger .dot {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 .trace-step small {
   margin-left: auto;
   color: var(--accent);
@@ -1011,6 +1095,16 @@ input:focus-visible,
   font-family: var(--mono);
   font-size: 0.7rem;
   white-space: nowrap;
+}
+
+.trace-step.warning small {
+  color: oklch(42% 0.11 89);
+  background: var(--panel);
+}
+
+.trace-step.danger small {
+  color: var(--danger);
+  background: var(--panel);
 }
 
 pre {
@@ -1025,6 +1119,92 @@ pre {
   font-family: var(--mono);
   font-size: 0.76rem;
   line-height: 1.55;
+}
+
+.plan-list.inline-plan {
+  margin-top: 10px;
+}
+
+.plan-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(76px, auto);
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel);
+  padding: 10px;
+}
+
+.plan-row > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.plan-row strong,
+.plan-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-row strong {
+  color: var(--text);
+  font-size: 0.84rem;
+}
+
+.plan-row span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.plan-row small {
+  justify-self: end;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--forest);
+  background: var(--success-soft);
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: 0.68rem;
+}
+
+.issue-list {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.issue-row {
+  display: grid;
+  gap: 3px;
+  border: 1px solid oklch(82% 0.07 27);
+  border-radius: 9px;
+  background: var(--panel);
+  padding: 9px 10px;
+}
+
+.issue-row strong {
+  color: var(--danger);
+  font-size: 0.78rem;
+}
+
+.issue-row span,
+.issue-row small {
+  color: var(--muted);
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.issue-row small {
+  font-family: var(--mono);
+  font-size: 0.72rem;
 }
 
 .hit-list {
@@ -1204,6 +1384,24 @@ pre {
 
   .tabs-list button {
     font-size: 0.8rem;
+  }
+
+  .run-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .tabs-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .plan-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .plan-row small {
+    grid-column: 2;
+    justify-self: start;
+    max-width: 100%;
   }
 }
 

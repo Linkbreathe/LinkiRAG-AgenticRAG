@@ -12,8 +12,10 @@ from __future__ import annotations
 from typing import Any
 
 from linki.core.jsonutil import extract_json
+from linki.core.trace import emit_event
 from linki.graph.prompts import GRADER_PROMPT
 from linki.graph.state import Evidence, LinkiGraphState
+from linki.hooks.base import run_retrieval
 
 
 def too_similar(a: str, b: str, threshold: float = 0.85) -> bool:
@@ -52,41 +54,31 @@ def grade(judge: Any, query: str, hits: list[Evidence]) -> dict[str, Any]:
             HumanMessage(content=f"Sub-query: {query}\n\nEvidence:\n{_render_hits(hits)}"),
         ]
     ).content
-    # Fallback: don't stall the pipeline — accept everything if grading breaks.
+    # A malformed judge response is not evidence of sufficiency. Keep the hits
+    # available to generation, but mark the grade as failed so the answer path
+    # must disclose the gap instead of silently treating ungraded evidence as
+    # verified.
     return extract_json(
         raw,
         fallback={
-            "sufficient": True,
+            "sufficient": False,
             "relevant_chunk_ids": [h.get("chunk_id") for h in hits],
-            "missing": "",
+            "missing": "retrieval grader returned an invalid verdict",
             "refined_query": query,
         },
     )
-
-
-def _stream_writer():
-    """LangGraph custom-stream writer if we're inside a streaming run, else None.
-
-    Lets the retrieval loop surface per-round events (each retrieve + grade) to a
-    live UI without changing the node's return contract. Safely returns None when
-    called via plain ``.invoke()`` or a direct unit-test call."""
-    try:
-        from langgraph.config import get_stream_writer
-
-        return get_stream_writer()
-    except Exception:
-        return None
 
 
 def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
     """Run the bounded retrieve->grade->refine loop for the current query.
 
     Reads ``retrieve_fn``/``judge``/``settings`` from state (injected at invoke
-    time), so it is fully unit-testable with fakes. Emits ``retrieve_round`` /
-    ``grade`` custom-stream events per round for live tracing.
+    time), so it is fully unit-testable with fakes. Fetches go through
+    ``run_retrieval`` (Cache/Dedup/TraceLog hooks apply when a run context is
+    active); ``emit_event`` surfaces ``retrieve_round`` / ``grade`` events to the
+    live UI and the persistent trace.
     """
     settings = state["settings"]
-    emit = _stream_writer()
     retrieve_fn = state["retrieve_fn"]
     judge = state.get("judge") or state["model"]
     max_rounds = getattr(settings, "max_rounds", 2)
@@ -109,33 +101,31 @@ def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
     current_query = base_query
 
     for round_no in range(1, max_rounds + 1):
-        hits = retrieve_fn(current_query, target_kb)
+        hits = run_retrieval(retrieve_fn, current_query, target_kb)
         fresh = [h for h in hits if h.get("chunk_id") not in seen]
         seen |= {h.get("chunk_id") for h in fresh if h.get("chunk_id")}
 
-        if emit:
-            emit({
-                "type": "retrieve_round", "round": round_no, "query": current_query,
-                "kb": target_kb,
-                "hits": [
-                    {"chunk_id": h.get("chunk_id"), "source": h.get("source"),
-                     "heading_path": h.get("heading_path"), "score": h.get("score")}
-                    for h in fresh
-                ],
-            })
+        emit_event({
+            "node": "retrieve", "type": "retrieve_round", "round": round_no,
+            "query": current_query, "kb": target_kb,
+            "hits": [
+                {"chunk_id": h.get("chunk_id"), "source": h.get("source"),
+                 "heading_path": h.get("heading_path"), "score": h.get("score")}
+                for h in fresh
+            ],
+        })
 
         verdict = grade(judge, base_query, fresh)
         relevant_ids = set(verdict.get("relevant_chunk_ids") or [])
         keep = [h for h in fresh if not relevant_ids or h.get("chunk_id") in relevant_ids]
         collected.extend(keep)
 
-        if emit:
-            emit({
-                "type": "grade", "round": round_no,
-                "sufficient": bool(verdict.get("sufficient")),
-                "kept": len(keep), "missing": verdict.get("missing", ""),
-                "refined_query": verdict.get("refined_query", ""),
-            })
+        emit_event({
+            "node": "retrieve", "type": "grade", "round": round_no,
+            "sufficient": bool(verdict.get("sufficient")),
+            "kept": len(keep), "missing": verdict.get("missing", ""),
+            "refined_query": verdict.get("refined_query", ""),
+        })
 
         if verdict.get("sufficient"):
             break

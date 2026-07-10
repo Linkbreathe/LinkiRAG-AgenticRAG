@@ -165,6 +165,32 @@ uv run pytest            # unit tests: planner fan-out, grade→refine dedup, ci
 The graph and CLI import without the heavy RAG stack (Qdrant/embeddings are lazy),
 so the reliability logic is unit-tested with fakes — no API key or model download needed.
 
+### Reproducible MultiHop-RAG benchmark
+
+Linki includes an adapter for the official MultiHop-RAG corpus (2,556 questions,
+609 news articles). The benchmark index is isolated under `.linki/benchmarks/`
+and uses the same production chunker and hybrid retriever as normal queries.
+
+```bash
+# Download the official questions and full corpus, then build the isolated index.
+linki bench-prep --benchmark multihop-rag
+linki bench-ingest --benchmark multihop-rag
+
+# Retrieval-only run over all 2,556 questions (no API calls).
+linki bench-retrieval --benchmark multihop-rag
+
+# Stratified end-to-end run with all four official query types.
+# Strict mode compares a fair single-shot baseline, a no-reflow ablation,
+# and the complete agentic workflow while recording latency/calls/tokens.
+linki eval --benchmark multihop-rag --strict --limit 40 --seed 42
+```
+
+The baseline has the same model, retriever, evidence-only policy, refusal rule,
+and citation requirement as Linki; only the orchestration differs. Reports include
+retrieval recall/precision, strict all-support recall, answer token F1, gold-answer
+containment, refusal correctness, citation validity, faithfulness, latency, model
+calls, and token usage. Empty retrieval is counted as a failure rather than skipped.
+
 ---
 
 ## Project structure
@@ -189,7 +215,8 @@ tests/                   unit tests (fakes; no network)
 ## Roadmap
 
 - ✅ **Phase 0–5** — package scaffold, hierarchical hybrid ingestion/retrieval, router/rewrite/clarify, planner fan-out with LangGraph `Send`, graded refine loops, evidence-only answers, citations, and verifier reflow.
-- ⏭️ **Phase 6** — pre/post-retrieve hooks, persistent trace/timeline, checkpoints, and a `linki eval` naive-vs-agentic benchmark.
+- ✅ **Phase 6** — pre/post-retrieve hooks, persistent trace/timeline, and fair naive-vs-agentic evaluation.
+- ✅ **Benchmark hardening** — official MultiHop-RAG adapter, full-corpus indexing, strict retrieval metrics, no-reflow ablation, and cost/latency telemetry.
 
 ---
 

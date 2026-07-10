@@ -95,6 +95,7 @@ class LinkiGraphState(TypedDict, total=False):
     answer: str
     citations: list[Citation]
     verified: bool
+    verification_error: bool
     verify_issues: list[dict]
     attempts: int
     final_answer: str

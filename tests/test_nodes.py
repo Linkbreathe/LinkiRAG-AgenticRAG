@@ -90,3 +90,16 @@ def test_verifier_route_logic():
     assert verifier_route({"verified": True, "settings": s}) == "final"
     assert verifier_route({"verified": False, "attempts": 2, "settings": s}) == "final_with_warning"
     assert verifier_route({"verified": False, "attempts": 1, "settings": s}) == "planner"
+
+
+def test_verifier_invalid_json_fails_closed_without_retry_loop():
+    llm = FakeLLM(verifier=lambda s, h: "not-json")
+    out = verifier_node({
+        "question": "q", "model": llm, "judge": llm,
+        "evidence": [ev("a")], "attempts": 0,
+    })
+
+    assert out["verified"] is False
+    assert out["verification_error"] is True
+    assert out["verify_issues"][0]["problem"] == "verifier-error"
+    assert verifier_route({**out, "settings": FakeSettings()}) == "final_with_warning"

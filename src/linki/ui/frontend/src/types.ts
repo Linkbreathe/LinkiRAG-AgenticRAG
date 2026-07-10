@@ -23,12 +23,35 @@ export interface TraceHit {
   score?: number;
 }
 
+export interface TraceSubQuery {
+  id?: string;
+  query: string;
+  target_kb?: string;
+  reason?: string;
+}
+
+export interface TraceIssue {
+  claim?: string;
+  problem?: string;
+  fix_instruction?: string;
+}
+
 export interface TraceStep {
   kind: string;
   title: string;
   status: string;
   detail: string;
   hits?: TraceHit[];
+  sub_queries?: TraceSubQuery[];
+  round?: number;
+  query?: string;
+  kb?: string;
+  sufficient?: boolean;
+  kept?: number;
+  missing?: string;
+  refined_query?: string;
+  verified?: boolean;
+  issues?: TraceIssue[];
 }
 
 export interface Evidence {

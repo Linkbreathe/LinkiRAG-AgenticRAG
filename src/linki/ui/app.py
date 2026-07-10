@@ -190,6 +190,24 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
         citations: list[dict[str, Any]] = []
         final = ""
 
+        # Run-scoped observability: hooks (Cache/Dedup/TraceLog) + persistent
+        # trace. The tracer fans events out to the live custom stream too, so the
+        # UI trace panel below keeps working unchanged.
+        import uuid as _uuid
+
+        from linki.core.trace import Tracer, _current_tracer
+        from linki.hooks.base import _current_hooks
+        from linki.hooks.builtin import default_hooks
+
+        run_id = _uuid.uuid4().hex[:12]
+        hook_ctx = default_hooks(settings, run_id=run_id)
+        tracer = None
+        data_dir = getattr(settings, "data_dir", None)
+        if getattr(settings, "enable_trace", True) and data_dir is not None:
+            tracer = Tracer(run_id, Path(data_dir) / "traces")
+        t_tok = _current_tracer.set(tracer)
+        h_tok = _current_hooks.set(hook_ctx)
+
         try:
             for mode, chunk in workflow.stream(init, stream_mode=["updates", "custom"]):
                 if mode == "custom":
@@ -202,6 +220,9 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
                                 f"Retrieve round {chunk.get('round')}",
                                 f"{len(hits)} hits",
                                 f"topic: {chunk.get('kb')}\nquery: {chunk.get('query')}",
+                                round=chunk.get("round"),
+                                query=chunk.get("query"),
+                                kb=chunk.get("kb"),
                                 hits=hits,
                             )
                         )
@@ -217,6 +238,10 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
                                     f"missing: {chunk.get('missing') or ''}\n"
                                     f"refined_query: {chunk.get('refined_query') or ''}"
                                 ),
+                                sufficient=ok,
+                                kept=chunk.get("kept"),
+                                missing=chunk.get("missing") or "",
+                                refined_query=chunk.get("refined_query") or "",
                             )
                         )
                     continue
@@ -252,6 +277,7 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
                                 "Plan",
                                 f"{len(sub_queries)} sub-queries",
                                 detail or "No retrieval plan returned.",
+                                sub_queries=sub_queries,
                             )
                         )
                     elif node == "retrieve":
@@ -272,12 +298,19 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
                                 "Verify",
                                 "passed" if ok else "failed",
                                 str(node_payload.get("verify_issues") or "all claims backed by evidence"),
+                                verified=ok,
+                                issues=node_payload.get("verify_issues") or [],
                             )
                         )
                     elif node in {"final", "final_with_warning", "chat_responder"}:
                         final = node_payload.get("final_answer") or final
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            _current_hooks.reset(h_tok)
+            if tracer is not None:
+                tracer.finalize()
+            _current_tracer.reset(t_tok)
 
         used_sources = [] if _is_refusal(final) else [
             {**citation, "label": _source_label(citation)} for citation in citations

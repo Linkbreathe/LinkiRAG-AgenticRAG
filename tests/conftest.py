@@ -44,6 +44,8 @@ class FakeLLM:
     answer: Callable[[str, str], str] | None = None
     verifier: Callable[[str, str], str] | None = None
     chat: Callable[[str, str], str] | None = None
+    naive: Callable[[str, str], str] | None = None
+    evalscore: Callable[[str, str], str] | None = None
     calls: list[tuple[str, str]] = field(default_factory=list)
 
     def invoke(self, messages) -> FakeResponse:
@@ -75,6 +77,11 @@ class FakeLLM:
                                             json.dumps({"passed": True, "issues": []})))
         if "friendly knowledge assistant" in system:
             return FakeResponse(self._call(self.chat, system, human, "Hi there!"))
+        if "single-shot RAG baseline" in system:
+            return FakeResponse(self._call(self.naive, system, human, "Naive answer from context."))
+        if "evaluation judge" in system:
+            return FakeResponse(self._call(self.evalscore, system, human,
+                                            json.dumps({"faithfulness": 4, "quality": 4})))
         return FakeResponse("{}")
 
     @staticmethod

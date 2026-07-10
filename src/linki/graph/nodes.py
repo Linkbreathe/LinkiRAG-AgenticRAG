@@ -264,10 +264,25 @@ def verifier_node(state: LinkiGraphState) -> dict[str, Any]:
             ]
         )
     )
-    verdict = extract_json(raw, fallback={"passed": True, "issues": [], "coverage": "", "summary": "verifier fallback"})
+    fallback_issue = {
+        "claim": "answer verification",
+        "problem": "verifier-error",
+        "fix_instruction": "The verifier returned an invalid verdict; do not treat the answer as verified.",
+    }
+    verdict = extract_json(
+        raw,
+        fallback={
+            "passed": False,
+            "issues": [fallback_issue],
+            "coverage": "unknown",
+            "summary": "invalid verifier response",
+            "verification_error": True,
+        },
+    )
     return {
         "verified": bool(verdict.get("passed")),
         "verify_issues": verdict.get("issues") or [],
+        "verification_error": bool(verdict.get("verification_error")),
         "attempts": state.get("attempts", 0) + 1,
     }
 
@@ -275,6 +290,8 @@ def verifier_node(state: LinkiGraphState) -> dict[str, Any]:
 def verifier_route(state: LinkiGraphState) -> str:
     if state.get("verified"):
         return "final"
+    if state.get("verification_error"):
+        return "final_with_warning"
     settings = state["settings"]
     if state.get("attempts", 0) >= getattr(settings, "max_attempts", 2):
         return "final_with_warning"

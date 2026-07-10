@@ -1,0 +1,4 @@
+{"id": "chat-1", "question": "你好，你是谁？", "type": "chat", "expect": {"should_refuse": false}}
+{"id": "single-1", "question": "TrustedHostMiddleware 怎么配置？", "type": "single", "expect": {"should_refuse": false, "expect_keywords": ["TrustedHostMiddleware"], "expect_sources": ["kb_api"]}}
+{"id": "multihop-1", "question": "对比 FastAPI 和 Flask 的部署方式有什么不同？", "type": "multihop", "expect": {"should_refuse": false, "expect_keywords": ["FastAPI", "Flask"], "expect_sources": ["kb_api"]}}
+{"id": "outofkb-1", "question": "公司 2019 年的年会在哪个城市举办的？", "type": "out_of_kb", "expect": {"should_refuse": true}}

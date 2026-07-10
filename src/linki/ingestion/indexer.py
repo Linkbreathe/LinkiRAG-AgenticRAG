@@ -16,10 +16,13 @@ from linki.config import KnowledgeBase, Settings
 from linki.core.kb_registry import topic_slug
 
 
-def _dense_embeddings(model_name: str):
+def _dense_embeddings(model_name: str, query_prefix: str = "", passage_prefix: str = ""):
     """Local dense embeddings via ``fastembed`` (ONNX, no torch), returned as a
     proper ``langchain_core.embeddings.Embeddings`` subclass (QdrantVectorStore
-    type-checks the class, so duck typing is not enough)."""
+    type-checks the class, so duck typing is not enough).
+
+    ``query_prefix``/``passage_prefix`` support e5-family models that require
+    ``"query: "`` / ``"passage: "`` markers; empty for bge and friends."""
     from langchain_core.embeddings import Embeddings
 
     class _FastEmbedDense(Embeddings):
@@ -27,12 +30,15 @@ def _dense_embeddings(model_name: str):
             from fastembed import TextEmbedding
 
             self._model = TextEmbedding(model_name=name)
+            self._qp = query_prefix
+            self._pp = passage_prefix
 
         def embed_documents(self, texts: list[str]) -> list[list[float]]:
-            return [v.tolist() for v in self._model.embed(list(texts))]
+            prefixed = [self._pp + t for t in texts]
+            return [v.tolist() for v in self._model.embed(prefixed)]
 
         def embed_query(self, text: str) -> list[float]:
-            return next(iter(self._model.embed([text]))).tolist()
+            return next(iter(self._model.embed([self._qp + text]))).tolist()
 
     return _FastEmbedDense(model_name)
 
@@ -117,7 +123,11 @@ class VectorStoreManager:
             return
         from langchain_qdrant import FastEmbedSparse
 
-        self._dense = _dense_embeddings(self._s.dense_model)
+        self._dense = _dense_embeddings(
+            self._s.dense_model,
+            getattr(self._s, "dense_query_prefix", ""),
+            getattr(self._s, "dense_passage_prefix", ""),
+        )
         self._sparse = FastEmbedSparse(model_name=self._s.sparse_model)
 
     def _dense_size(self) -> int:
