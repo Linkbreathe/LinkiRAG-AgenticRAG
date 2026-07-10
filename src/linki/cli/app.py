@@ -234,7 +234,10 @@ def bench_retrieval(
     rows = load_dataset(dest / "dataset.jsonl")
     if limit is not None:
         rows = multihop_rag.select_stratified(rows, limit, seed=seed)
-    report = run_retrieval_eval(rows, make_retrieve_fn(settings), settings.default_kb.tool_name)
+    report = run_retrieval_eval(
+        rows, make_retrieve_fn(settings), settings.default_kb.tool_name,
+        progress=console.print,
+    )
     console.print(json.dumps({
         "aggregate": report["aggregate"],
         "by_question_type": report["by_question_type"],

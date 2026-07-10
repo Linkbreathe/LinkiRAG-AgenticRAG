@@ -9,10 +9,12 @@ from typing import Any
 from linki.eval.run_eval import retrieval_metrics
 
 
-def run_retrieval_eval(dataset: list[dict[str, Any]], retrieve_fn, kb: str) -> dict[str, Any]:
+def run_retrieval_eval(
+    dataset: list[dict[str, Any]], retrieve_fn, kb: str, *, progress=None,
+) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
     by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in dataset:
+    for index, row in enumerate(dataset, start=1):
         started = time.perf_counter()
         evidence = retrieve_fn(row["question"], kb) or []
         elapsed = time.perf_counter() - started
@@ -27,6 +29,8 @@ def run_retrieval_eval(dataset: list[dict[str, Any]], retrieve_fn, kb: str) -> d
         }
         items.append(result)
         by_type[result["question_type"]].append(result)
+        if progress and (index % 100 == 0 or index == len(dataset)):
+            progress(f"retrieved {index}/{len(dataset)} questions")
 
     def aggregate(rows):
         answerable = [row for row in rows if row["retrieval_recall"] is not None]
@@ -44,4 +48,3 @@ def run_retrieval_eval(dataset: list[dict[str, Any]], retrieve_fn, kb: str) -> d
         "by_question_type": {name: aggregate(rows) for name, rows in sorted(by_type.items())},
         "items": items,
     }
-
