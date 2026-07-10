@@ -124,7 +124,7 @@ linki ask "How do I configure TrustedHostMiddleware?" --debug
 # Multi-turn REPL
 linki
 
-# Web UI (Documents + Chat, streams each reasoning step)
+# Web UI (TypeScript console: topics, document upload, chat, trace, evidence)
 linki web            # http://127.0.0.1:7860
 ```
 
@@ -174,7 +174,7 @@ src/linki/
 ├── ingestion/           loader (PDF/MD) · chunker (parent/child) · indexer (embedded Qdrant + parent store)
 ├── tools/               hybrid retrieval → Evidence · tool registry
 ├── graph/               state · prompts · evidence(citations) · nodes · subgraph(grade→refine) · workflow
-├── ui/                  Gradio web app (Documents + Chat)
+├── ui/                  FastAPI backend + React/TypeScript web console
 └── cli/app.py           linki ingest / ask / web / REPL
 
 docs/superpowers/specs/  design document

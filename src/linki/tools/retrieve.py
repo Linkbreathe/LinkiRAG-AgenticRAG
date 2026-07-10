@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from linki.config import Settings
+from linki.core.kb_registry import KnowledgeBaseRegistry
 from linki.graph.state import Evidence
 from linki.ingestion.indexer import ParentStore, VectorStoreManager
 
@@ -18,11 +19,12 @@ from linki.ingestion.indexer import ParentStore, VectorStoreManager
 class Retriever:
     def __init__(self, settings: Settings):
         self._s = settings
+        self._registry = KnowledgeBaseRegistry(settings)
         self._vectors = VectorStoreManager(settings)
         self._parents = ParentStore(settings.parent_store_path)
 
     def retrieve(self, query: str, kb_tool_name: str | None = None) -> list[Evidence]:
-        kb = self._s.kb(kb_tool_name or "") or self._s.default_kb
+        kb = self._registry.get(kb_tool_name) or self._s.default_kb
         vs = self._vectors.get_vectorstore(kb.collection)
         try:
             results = vs.similarity_search_with_score(query, k=self._s.retrieval_k)

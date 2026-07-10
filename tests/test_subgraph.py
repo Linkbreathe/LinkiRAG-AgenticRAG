@@ -76,3 +76,17 @@ def test_grader_fallback_on_bad_json_does_not_stall():
     out = retrieval_node(_state(retrieve_fn, FakeLLM(grader=lambda s, h: "not json at all")))
     # fallback treats as sufficient, keeps evidence, no gaps
     assert out["evidence"] and out["gaps"] == []
+
+
+def test_target_kb_is_passed_to_retriever():
+    seen = {}
+
+    def retrieve_fn(query, kb):
+        seen["kb"] = kb
+        return [ev("a")]
+
+    state = _state(retrieve_fn, FakeLLM(grader=lambda s, h: json.dumps({"sufficient": True})))
+    state["target_kb"] = "Retrieve_sales"
+    retrieval_node(state)
+
+    assert seen["kb"] == "Retrieve_sales"

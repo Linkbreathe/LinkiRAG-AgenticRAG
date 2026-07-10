@@ -97,13 +97,13 @@ def ask(
 def web(
     host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
     port: int = typer.Option(7860, "--port", help="Port."),
-    share: bool = typer.Option(False, "--share", help="Create a public Gradio share link."),
+    share: bool = typer.Option(False, "--share", help="Unsupported; kept for CLI compatibility."),
 ) -> None:
-    """Launch the Gradio web UI (Documents + Chat)."""
+    """Launch the TypeScript web UI (Topics + Documents + Chat)."""
     try:
         from linki.ui.app import launch
     except ImportError:
-        console.print("[red]Gradio not installed. Run: uv pip install gradio[/red]")
+        console.print("[red]Web UI dependencies are missing. Run: uv pip install -e '.[ui]'[/red]")
         raise typer.Exit(1)
     try:
         launch(server_name=host, server_port=port, share=share)

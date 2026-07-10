@@ -70,6 +70,7 @@ class LinkiGraphState(TypedDict, total=False):
     sub_queries: list[SubQuery]
 
     # —— retrieval results ——
+    target_kb: str
     evidence: Annotated[list[Evidence], operator.add]
     retrieval_keys: Annotated[set[str], _set_union]
     gaps: Annotated[list[str], operator.add]

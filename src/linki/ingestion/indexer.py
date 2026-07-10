@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from linki.config import KnowledgeBase, Settings
+from linki.core.kb_registry import topic_slug
 
 
 def _dense_embeddings(model_name: str):
@@ -62,20 +63,34 @@ class ParentStore:
         data = json.loads(fp.read_text(encoding="utf-8"))
         return {"content": data["page_content"], "parent_id": parent_id, "metadata": data["metadata"]}
 
-    def list_sources(self) -> list[str]:
+    def list_sources(self, kb_name: str | None = None) -> list[str]:
         sources: set[str] = set()
         for fp in self._path.glob("*.json"):
             try:
-                src = json.loads(fp.read_text(encoding="utf-8")).get("metadata", {}).get("source")
+                metadata = json.loads(fp.read_text(encoding="utf-8")).get("metadata", {})
             except (OSError, json.JSONDecodeError):
                 continue
+            if kb_name:
+                item_kb = metadata.get("kb")
+                if item_kb != kb_name and not (kb_name == "default" and item_kb is None):
+                    continue
+            src = metadata.get("source")
             if src:
                 sources.add(src)
         return sorted(sources)
 
-    def clear(self) -> None:
+    def clear(self, kb_name: str | None = None) -> None:
         for fp in self._path.glob("*.json"):
-            fp.unlink()
+            if kb_name is None:
+                fp.unlink()
+                continue
+            try:
+                metadata = json.loads(fp.read_text(encoding="utf-8")).get("metadata", {})
+            except (OSError, json.JSONDecodeError):
+                continue
+            item_kb = metadata.get("kb")
+            if item_kb == kb_name or (kb_name == "default" and item_kb is None):
+                fp.unlink()
 
 
 class VectorStoreManager:
@@ -88,14 +103,20 @@ class VectorStoreManager:
         self._dense = None
         self._sparse = None
 
-    def _ensure(self):
+    def _ensure_client(self):
         if self._client is not None:
             return
-        from langchain_qdrant import FastEmbedSparse
         from qdrant_client import QdrantClient
 
         Path(self._s.qdrant_path).mkdir(parents=True, exist_ok=True)
         self._client = QdrantClient(path=str(self._s.qdrant_path))
+
+    def _ensure(self):
+        self._ensure_client()
+        if self._dense is not None and self._sparse is not None:
+            return
+        from langchain_qdrant import FastEmbedSparse
+
         self._dense = _dense_embeddings(self._s.dense_model)
         self._sparse = FastEmbedSparse(model_name=self._s.sparse_model)
 
@@ -116,9 +137,15 @@ class VectorStoreManager:
         )
 
     def delete_collection(self, collection: str) -> None:
-        self._ensure()
+        self._ensure_client()
         if self._client.collection_exists(collection):
             self._client.delete_collection(collection)
+
+    def collection_points(self, collection: str) -> int | None:
+        self._ensure_client()
+        if not self._client.collection_exists(collection):
+            return None
+        return self._client.get_collection(collection).points_count
 
     def get_vectorstore(self, collection: str):
         self._ensure()
@@ -153,8 +180,19 @@ class Indexer:
         parent_pairs, child_docs = DocumentChunker(self._s).chunk_text(md_text, source_name)
 
         stem = _slug(Path(path).stem)
+        kb_prefix = topic_slug(kb.name)
+        parent_id_map: dict[str, str] = {}
+        for parent_id, parent in parent_pairs:
+            new_parent_id = f"{kb_prefix}_{parent_id}"
+            parent_id_map[parent_id] = new_parent_id
+            parent.metadata["parent_id"] = new_parent_id
+            parent.metadata["kb"] = kb.name
+        parent_pairs = [(parent_id_map[parent_id], parent) for parent_id, parent in parent_pairs]
+
         for idx, child in enumerate(child_docs):
-            child.metadata["chunk_id"] = f"{stem}_c{idx}"
+            old_parent_id = child.metadata.get("parent_id", "")
+            child.metadata["parent_id"] = parent_id_map.get(old_parent_id, old_parent_id)
+            child.metadata["chunk_id"] = f"{kb_prefix}_{stem}_c{idx}"
             child.metadata["kb"] = kb.name
 
         self.vectors.create_collection(kb.collection)
@@ -173,4 +211,4 @@ class Indexer:
     def clear(self, kb: KnowledgeBase) -> None:
         """Drop a knowledge base's vector collection and parent store."""
         self.vectors.delete_collection(kb.collection)
-        self.parents.clear()
+        self.parents.clear(kb.name)

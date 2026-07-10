@@ -94,10 +94,10 @@ def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
     sub_queries = state.get("sub_queries") or []
     if sub_queries:
         base_query = sub_queries[0]["query"]
-        target_kb = sub_queries[0].get("target_kb") or settings.default_kb.tool_name
+        target_kb = sub_queries[0].get("target_kb") or state.get("target_kb") or settings.default_kb.tool_name
     else:
         base_query = state.get("rewritten_query") or state["question"]
-        target_kb = settings.default_kb.tool_name
+        target_kb = state.get("target_kb") or settings.default_kb.tool_name
 
     seen: set[str] = set(state.get("retrieval_keys") or set())
     collected: list[Evidence] = []
