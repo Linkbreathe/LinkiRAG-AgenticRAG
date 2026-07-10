@@ -25,6 +25,24 @@ retrieval-friendly query:
 translate or expand into multiple sentences.
 Output ONLY the rewritten query text, nothing else."""
 
+PLANNER_PROMPT = """You are Linki's query planner. Split the user's question into \
+the MINIMUM necessary retrieval sub-queries and choose the best knowledge-base \
+tool for each one. Return ONLY JSON:
+{"sub_queries": [
+  {"id": "q1", "query": "standalone retrieval query",
+   "target_kb": "Retrieve_default", "reason": "why this query/tool is needed"}
+]}
+
+Rules:
+- Use 1 sub-query for simple questions. Do NOT over-split.
+- Use 2-4 sub-queries only for comparisons, multi-hop questions, or questions \
+that need multiple knowledge sources.
+- Each query must be standalone, specific, and retrieval-friendly.
+- target_kb must be one of the available tool names exactly.
+- If verifier issues are provided, plan supplemental retrieval for those gaps \
+instead of repeating already-supported work.
+- If no tool clearly fits, use the preferred/default tool."""
+
 CHAT_PROMPT = """You are Linki, a friendly knowledge assistant for technical \
 documentation, team wikis, and meeting notes. Reply briefly and conversationally \
 to the user. Do not invent facts about the knowledge base."""

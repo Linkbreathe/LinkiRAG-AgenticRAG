@@ -236,6 +236,24 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
                         trace.append(
                             trace_step("rewrite", "Rewrite", "ready", node_payload["rewritten_query"])
                         )
+                    elif node == "planner":
+                        sub_queries = node_payload.get("sub_queries") or []
+                        detail = "\n".join(
+                            (
+                                f"{sq.get('id', '?')}: {sq.get('query', '')}\n"
+                                f"  target: {sq.get('target_kb', '')}\n"
+                                f"  reason: {sq.get('reason', '')}"
+                            )
+                            for sq in sub_queries
+                        )
+                        trace.append(
+                            trace_step(
+                                "plan",
+                                "Plan",
+                                f"{len(sub_queries)} sub-queries",
+                                detail or "No retrieval plan returned.",
+                            )
+                        )
                     elif node == "retrieve":
                         evidence = node_payload.get("evidence") or evidence
                         gaps = node_payload.get("gaps") or []

@@ -39,6 +39,7 @@ class FakeLLM:
 
     router: Callable[[str, str], str] | None = None
     rewrite: Callable[[str, str], str] | None = None
+    planner: Callable[[str, str], str] | None = None
     grader: Callable[[str, str], str] | None = None
     answer: Callable[[str, str], str] | None = None
     verifier: Callable[[str, str], str] | None = None
@@ -53,6 +54,17 @@ class FakeLLM:
                                             json.dumps({"route": "retrieve", "reason": "default"})))
         if "Rewrite the user" in system:
             return FakeResponse(self._call(self.rewrite, system, human, "rewritten query"))
+        if "query planner" in system:
+            return FakeResponse(self._call(self.planner, system, human, json.dumps({
+                "sub_queries": [
+                    {
+                        "id": "q1",
+                        "query": "rewritten query",
+                        "target_kb": "Retrieve_default",
+                        "reason": "default",
+                    }
+                ]
+            })))
         if "retrieval-quality grader" in system:
             return FakeResponse(self._call(self.grader, system, human,
                                             json.dumps({"sufficient": True, "relevant_chunk_ids": []})))
@@ -86,16 +98,33 @@ def ev(chunk_id: str, text: str = "some text", source: str = "doc.pdf", **kw) ->
 class FakeSettings:
     """Minimal settings stand-in for graph nodes."""
 
-    def __init__(self, max_rounds: int = 2, max_attempts: int = 2):
+    def __init__(self, max_rounds: int = 2, max_attempts: int = 2, kbs: list[str] | None = None):
         self.max_rounds = max_rounds
         self.max_attempts = max_attempts
 
         class _KB:
-            tool_name = "Retrieve_default"
-            name = "default"
+            def __init__(self, name: str):
+                self.name = name
+                self.title = name.title()
+                self.usage_hint = f"Documents about {name}."
 
-        self._kb = _KB()
+            @property
+            def tool_name(self):
+                return f"Retrieve_{self.name}"
+
+            @property
+            def collection(self):
+                return f"kb_{self.name}"
+
+        self.knowledge_bases = [_KB(name) for name in (kbs or ["default"])]
 
     @property
     def default_kb(self):
-        return self._kb
+        return self.knowledge_bases[0]
+
+    def kb(self, name: str):
+        want = name[len("Retrieve_"):] if name.startswith("Retrieve_") else name
+        for kb in self.knowledge_bases:
+            if kb.name == want or kb.collection == want or kb.tool_name == name:
+                return kb
+        return None

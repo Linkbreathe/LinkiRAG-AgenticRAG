@@ -11,7 +11,6 @@ Design notes:
 
 from __future__ import annotations
 
-import operator
 from typing import Annotated, Any, Callable, TypedDict
 
 
@@ -44,6 +43,22 @@ def _set_union(a: set[str], b: set[str]) -> set[str]:
     return (a or set()) | (b or set())
 
 
+def _evidence_union(a: list[Evidence], b: list[Evidence]) -> list[Evidence]:
+    out: list[Evidence] = []
+    seen: set[str] = set()
+    for item in (a or []) + (b or []):
+        key = item.get("chunk_id") or f"{item.get('source', '')}:{item.get('text', '')[:80]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _list_add(a: list[Any], b: list[Any]) -> list[Any]:
+    return (a or []) + (b or [])
+
+
 # ``retrieve_fn(query, kb_tool_name) -> list[Evidence]``
 RetrieveFn = Callable[[str, str], list[Evidence]]
 
@@ -68,12 +83,13 @@ class LinkiGraphState(TypedDict, total=False):
 
     # —— planning (Phase 3) ——
     sub_queries: list[SubQuery]
+    sub_query: SubQuery
 
     # —— retrieval results ——
     target_kb: str
-    evidence: Annotated[list[Evidence], operator.add]
+    evidence: Annotated[list[Evidence], _evidence_union]
     retrieval_keys: Annotated[set[str], _set_union]
-    gaps: Annotated[list[str], operator.add]
+    gaps: Annotated[list[str], _list_add]
 
     # —— answer / verify ——
     answer: str

@@ -45,26 +45,28 @@ pieces and adds the reliability layer that makes answers trustworthy.
 
 ## Architecture
 
-The Phase-2 graph (single query, the current milestone):
+The Phase-5 graph (planned, parallel retrieval with verification reflow):
 
 ```
 router ─chat──▶ chat_responder ─▶ END
   │  ─clarify─▶ clarify ─▶ END
-  └  ─retrieve▶ rewrite ─▶ retrieve(loop) ─▶ answer ─▶ verifier
-                              │                          ├ pass ──▶ final ─▶ END
-                              │                          ├ retry ─▶ retrieve (fresh, deduped)
-                              │                          └ giveup▶ final_with_warning ─▶ END
-                              └ retrieve(loop): retrieve ─▶ grade ─(insufficient)▶ refine ↺
-                                                              └(sufficient / give up)▶ collect
+  └  ─retrieve▶ rewrite ─▶ planner ─Send×N▶ retrieve(loop) ─▶ answer ─▶ verifier
+                              ▲                                      ├ pass ──▶ final ─▶ END
+                              └──────── retry with issues ───────────┤
+                                                                     └ giveup▶ final_with_warning ─▶ END
+
+retrieve(loop): retrieve ─▶ grade ─(insufficient)▶ refine ↺
+                         └(sufficient / give up)▶ collect
 ```
 
 - **router** — chat / retrieve / clarify. On any doubt, prefer retrieve.
 - **rewrite** — resolve pronouns and ellipsis from history into a standalone, retrieval-friendly query.
+- **planner** — produce a minimal `QueryPlan` (1-4 sub-queries), choose each target knowledge-base tool from its description, and fan out independent searches with LangGraph `Send`.
 - **retrieve loop** — hybrid (dense + sparse) search with parent expansion, then a
   **grader** decides sufficiency; if not enough it **refines** the query and retrieves
-  again (bounded by `max_rounds`), with global de-duplication so each round explores new ground.
+  again (bounded by `max_rounds`), with global de-duplication so each branch/round explores new ground.
 - **answer** — generate **only** from the numbered evidence, marking every claim with `[n]`, and disclosing gaps.
-- **verifier** — check the answer against the evidence claim-by-claim; on failure, reflow for more evidence (bounded by `max_attempts`), else degrade transparently with a warning.
+- **verifier** — check the answer against the evidence claim-by-claim; on failure, send structured issues back to the planner for supplemental retrieval (bounded by `max_attempts`), else degrade transparently with a warning.
 
 Embeddings are **local** (`fastembed`, ONNX — no torch, no GPU). Qdrant runs in
 **embedded on-disk mode** — no Docker, no server.
@@ -157,7 +159,7 @@ sees (Phase 3), so write it as "what this KB holds / which questions belong here
 ## Testing
 
 ```bash
-uv run pytest            # 23 unit tests: routing, grade→refine dedup, citations, verifier reflow
+uv run pytest            # unit tests: planner fan-out, grade→refine dedup, citations, verifier reflow
 ```
 
 The graph and CLI import without the heavy RAG stack (Qdrant/embeddings are lazy),
@@ -186,9 +188,8 @@ tests/                   unit tests (fakes; no network)
 
 ## Roadmap
 
-- ✅ **Phase 0–2** — package scaffold, hierarchical hybrid ingestion/retrieval, and the reliability layer (grader, citations, verifier). Web UI wired to the graph.
-- ⏭️ **Phase 3** — planner: decompose complex questions into sub-queries, route each to a target KB, run them in parallel via LangGraph `Send`.
-- ⏭️ **Phase 4** — pre/post-retrieve hooks, trace/timeline, checkpoints, and a `linki eval` naive-vs-agentic benchmark.
+- ✅ **Phase 0–5** — package scaffold, hierarchical hybrid ingestion/retrieval, router/rewrite/clarify, planner fan-out with LangGraph `Send`, graded refine loops, evidence-only answers, citations, and verifier reflow.
+- ⏭️ **Phase 6** — pre/post-retrieve hooks, persistent trace/timeline, checkpoints, and a `linki eval` naive-vs-agentic benchmark.
 
 ---
 

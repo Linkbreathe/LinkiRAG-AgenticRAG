@@ -90,3 +90,18 @@ def test_target_kb_is_passed_to_retriever():
     retrieval_node(state)
 
     assert seen["kb"] == "Retrieve_sales"
+
+
+def test_sub_query_target_kb_is_passed_to_retriever():
+    seen = {}
+
+    def retrieve_fn(query, kb):
+        seen["query"] = query
+        seen["kb"] = kb
+        return [ev("a")]
+
+    state = _state(retrieve_fn, FakeLLM(grader=lambda s, h: json.dumps({"sufficient": True})))
+    state["sub_query"] = {"id": "q1", "query": "api workers", "target_kb": "Retrieve_api"}
+    retrieval_node(state)
+
+    assert seen == {"query": "api workers", "kb": "Retrieve_api"}

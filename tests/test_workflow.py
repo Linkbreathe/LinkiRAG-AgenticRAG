@@ -16,6 +16,33 @@ def _run(llm, retrieve_fn, **kw):
     )
 
 
+def test_planner_fans_out_sub_queries_to_target_kbs():
+    llm = FakeLLM(
+        router=lambda s, h: json.dumps({"route": "retrieve", "reason": "needs kb"}),
+        planner=lambda s, h: json.dumps({
+            "sub_queries": [
+                {"id": "q1", "query": "FastAPI deployment", "target_kb": "Retrieve_api", "reason": "api"},
+                {"id": "q2", "query": "meeting limit decision", "target_kb": "Retrieve_meetings", "reason": "meeting"},
+            ]
+        }),
+        grader=lambda s, h: json.dumps({"sufficient": True, "relevant_chunk_ids": []}),
+        answer=lambda s, h: "The answer combines both sources [1] [2].",
+        verifier=lambda s, h: json.dumps({"passed": True, "issues": []}),
+    )
+    calls = []
+
+    def retrieve_fn(query, kb):
+        calls.append((query, kb))
+        return [ev(f"{kb}-{len(calls)}", kb=kb, text=query)]
+
+    state = _run(llm, retrieve_fn, kbs=["default", "api", "meetings"])
+
+    assert ("FastAPI deployment", "Retrieve_api") in calls
+    assert ("meeting limit decision", "Retrieve_meetings") in calls
+    assert len(state["evidence"]) == 2
+    assert state["verified"] is True
+
+
 def test_retrieve_path_end_to_end():
     llm = FakeLLM(
         router=lambda s, h: json.dumps({"route": "retrieve", "reason": "needs kb"}),
@@ -60,8 +87,20 @@ def test_no_evidence_still_completes():
 
 
 def test_verifier_reflow_to_warning_when_attempts_exhausted():
+    planner_calls = {"n": 0}
+
+    def planner(system, human):
+        planner_calls["n"] += 1
+        query = "initial query" if planner_calls["n"] == 1 else "supplemental query"
+        return json.dumps({
+            "sub_queries": [
+                {"id": f"q{planner_calls['n']}", "query": query, "target_kb": "Retrieve_default"}
+            ]
+        })
+
     llm = FakeLLM(
         router=lambda s, h: json.dumps({"route": "retrieve", "reason": "kb"}),
+        planner=planner,
         grader=lambda s, h: json.dumps({"sufficient": True, "relevant_chunk_ids": []}),
         answer=lambda s, h: "Dubious claim [1].",
         verifier=lambda s, h: json.dumps({"passed": False, "issues": [{"claim": "Dubious claim", "problem": "unsupported"}]}),
@@ -73,4 +112,5 @@ def test_verifier_reflow_to_warning_when_attempts_exhausted():
 
     state = _run(llm, retrieve_fn, max_attempts=2)
     assert state["attempts"] == 2
+    assert planner_calls["n"] == 2
     assert "未完全通过验证" in state["final_answer"] or "did not fully pass" in state["final_answer"]

@@ -91,8 +91,12 @@ def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
     judge = state.get("judge") or state["model"]
     max_rounds = getattr(settings, "max_rounds", 2)
 
+    sub_query = state.get("sub_query")
     sub_queries = state.get("sub_queries") or []
-    if sub_queries:
+    if sub_query:
+        base_query = sub_query["query"]
+        target_kb = sub_query.get("target_kb") or state.get("target_kb") or settings.default_kb.tool_name
+    elif sub_queries:
         base_query = sub_queries[0]["query"]
         target_kb = sub_queries[0].get("target_kb") or state.get("target_kb") or settings.default_kb.tool_name
     else:
