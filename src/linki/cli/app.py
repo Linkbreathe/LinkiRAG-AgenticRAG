@@ -200,7 +200,7 @@ def eval_cmd(
         rows = select_stratified(rows, limit, seed=seed)
     console.print(f"🧪 Evaluating {len(rows)} rows from {ds_path} (fair baseline vs agentic) …")
     report = run_eval(rows, model=model, judge=judge, settings=settings,
-                      retrieve_fn=retrieve_fn, strict=strict)
+                      retrieve_fn=retrieve_fn, strict=strict, progress=console.print)
     console.print(format_report(report))
 
     out_dir = settings.data_dir / "eval"

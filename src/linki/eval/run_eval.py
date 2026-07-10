@@ -201,7 +201,7 @@ def _run_naive(q, *, model, settings, retrieve_fn):
 
 def run_eval(
     dataset: list[dict], *, model: Any, judge: Any, settings: Any,
-    retrieve_fn: Any, app=None, strict: bool = False,
+    retrieve_fn: Any, app=None, strict: bool = False, progress=None,
 ) -> dict[str, Any]:
     """Run a fair baseline, Linki, and optionally a no-reflow ablation."""
     systems = ["naive", "agentic_no_reflow", "agentic"] if strict else ["naive", "agentic"]
@@ -229,6 +229,8 @@ def run_eval(
             row[name]["answer"] = answer
             row[name]["retrieved_sources"] = [hit.get("source") for hit in evidence]
         items.append(row)
+        if progress:
+            progress(f"evaluated {len(items)}/{len(dataset)} questions")
 
     return {"systems": systems, "items": items, "aggregate": _aggregate(items, systems)}
 
