@@ -190,6 +190,8 @@ and citation requirement as Linki; only the orchestration differs. Reports inclu
 retrieval recall/precision, strict all-support recall, answer token F1, gold-answer
 containment, refusal correctness, citation validity, faithfulness, latency, model
 calls, and token usage. Empty retrieval is counted as a failure rather than skipped.
+See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for the latest full-corpus and
+end-to-end results, including limitations and cost trade-offs.
 
 ---
 

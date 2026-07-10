@@ -33,6 +33,7 @@ _REFUSAL_MARKERS = (
     "未找到", "没有找到", "无法找到", "知识库中没有", "知识库中未",
     "not found", "cannot find", "couldn't find", "don't have", "do not have",
     "no relevant", "not covered", "insufficient", "cannot answer",
+    "do not contain", "does not contain", "未包含",
 )
 
 
@@ -65,8 +66,12 @@ class _TrackedModel:
 
 
 def _did_refuse(answer: str) -> bool:
-    low = (answer or "").lower()
-    return any(marker.lower() in low for marker in _REFUSAL_MARKERS)
+    # Gap disclosure later in an otherwise useful answer is not a full refusal.
+    # Classify from the first substantive sentence, where all supported Linki
+    # refusal templates state that the answer is unavailable.
+    text = re.sub(r"^[\s#>*_-]+", "", answer or "").strip()
+    first_sentence = re.split(r"(?<=[.!?。！？])\s+|\n\s*\n", text, maxsplit=1)[0].lower()
+    return any(marker.lower() in first_sentence for marker in _REFUSAL_MARKERS)
 
 
 def _normalize(text: str) -> str:

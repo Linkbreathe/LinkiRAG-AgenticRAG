@@ -9,6 +9,7 @@ from conftest import FakeLLM, FakeSettings, ev
 
 from linki.eval.naive import naive_answer
 from linki.eval.run_eval import format_report, load_dataset, run_eval, score_answer
+from linki.eval.run_eval import _did_refuse
 
 
 def _agentic_llm():
@@ -55,6 +56,13 @@ def test_score_answer_marks_refusal_correctness():
     )
     assert scored2["did_refuse"] is False
     assert scored2["refusal_correct"] is False
+
+
+def test_partial_gap_after_answer_is_not_a_full_refusal():
+    answer = "The company is Google [1]. A secondary detail was not found in the knowledge base."
+    assert _did_refuse(answer) is False
+    assert _did_refuse("The answer was not found in the knowledge base.") is True
+    assert _did_refuse("The provided passages do not contain the requested information.") is True
 
 
 def test_score_answer_computes_retrieval_recall_vs_gold():
