@@ -64,13 +64,29 @@ def grade(judge: Any, query: str, hits: list[Evidence]) -> dict[str, Any]:
     )
 
 
+def _stream_writer():
+    """LangGraph custom-stream writer if we're inside a streaming run, else None.
+
+    Lets the retrieval loop surface per-round events (each retrieve + grade) to a
+    live UI without changing the node's return contract. Safely returns None when
+    called via plain ``.invoke()`` or a direct unit-test call."""
+    try:
+        from langgraph.config import get_stream_writer
+
+        return get_stream_writer()
+    except Exception:
+        return None
+
+
 def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
     """Run the bounded retrieve->grade->refine loop for the current query.
 
     Reads ``retrieve_fn``/``judge``/``settings`` from state (injected at invoke
-    time), so it is fully unit-testable with fakes.
+    time), so it is fully unit-testable with fakes. Emits ``retrieve_round`` /
+    ``grade`` custom-stream events per round for live tracing.
     """
     settings = state["settings"]
+    emit = _stream_writer()
     retrieve_fn = state["retrieve_fn"]
     judge = state.get("judge") or state["model"]
     max_rounds = getattr(settings, "max_rounds", 2)
@@ -93,10 +109,29 @@ def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
         fresh = [h for h in hits if h.get("chunk_id") not in seen]
         seen |= {h.get("chunk_id") for h in fresh if h.get("chunk_id")}
 
+        if emit:
+            emit({
+                "type": "retrieve_round", "round": round_no, "query": current_query,
+                "kb": target_kb,
+                "hits": [
+                    {"chunk_id": h.get("chunk_id"), "source": h.get("source"),
+                     "heading_path": h.get("heading_path"), "score": h.get("score")}
+                    for h in fresh
+                ],
+            })
+
         verdict = grade(judge, base_query, fresh)
         relevant_ids = set(verdict.get("relevant_chunk_ids") or [])
         keep = [h for h in fresh if not relevant_ids or h.get("chunk_id") in relevant_ids]
         collected.extend(keep)
+
+        if emit:
+            emit({
+                "type": "grade", "round": round_no,
+                "sufficient": bool(verdict.get("sufficient")),
+                "kept": len(keep), "missing": verdict.get("missing", ""),
+                "refined_query": verdict.get("refined_query", ""),
+            })
 
         if verdict.get("sufficient"):
             break
