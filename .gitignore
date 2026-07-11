@@ -18,6 +18,7 @@ linki.yaml
 # Ignore docs/ contents but keep the Linki fusion design specs tracked.
 docs/*
 !docs/superpowers/
+!docs/Linki-AgenticRAG二次升级规划.md
 
 notebooks/output.csv
 
