@@ -20,12 +20,18 @@ NAIVE_PROMPT = (
 
 
 def naive_answer(question: str, *, model: Any, settings: Any, retrieve_fn: Any,
-                 kb: str | None = None) -> dict[str, Any]:
+                 kb: str | None = None, token_budget: int | None = None) -> dict[str, Any]:
     """Single-shot retrieve-then-generate. Returns ``{answer, evidence}``."""
     from langchain_core.messages import HumanMessage, SystemMessage
 
     target_kb = kb or settings.default_kb.tool_name
     evidence = retrieve_fn(question, target_kb) or []
+    if token_budget is not None:
+        from linki.retrieval.evidence_pack import build_evidence_pack
+
+        evidence = [dict(item) for item in build_evidence_pack(
+            evidence, token_budget=token_budget,
+        ).units]
     context = "\n\n".join(
         f"[{i}] ({h.get('source', '?')}) {h.get('text', '').strip()}"
         for i, h in enumerate(evidence, start=1)

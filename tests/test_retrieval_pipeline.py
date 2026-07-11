@@ -49,6 +49,22 @@ def test_disabled_cross_encoder_uses_labelled_lexical_fallback():
     assert ranked[0].rerank_score is not None
 
 
+def test_reranker_score_cache_can_be_disabled_for_fair_latency_measurement(monkeypatch):
+    class Backend:
+        calls = 0
+
+        def rerank(self, query, documents):
+            self.calls += 1
+            return [0.5 for _ in documents]
+
+    backend = Backend()
+    reranker = CrossEncoderReranker(cache_scores=False)
+    monkeypatch.setattr(reranker, "_model", lambda: backend)
+    reranker.rerank("same query", [candidate("same")])
+    reranker.rerank("same query", [candidate("same")])
+    assert backend.calls == 2
+
+
 def test_rrf_fuses_channels_without_treating_raw_scores_as_calibrated():
     hybrid = [candidate("a", 99), candidate("b", 1)]
     graph = [candidate("b", 0.01, channel="graph"), candidate("c", 0.009, channel="graph")]

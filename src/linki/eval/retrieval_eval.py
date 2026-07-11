@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import time
 import math
+import json
+import hashlib
 from collections import defaultdict
 from typing import Any
+from pathlib import Path
 
 from linki.eval.run_eval import retrieval_metrics
 from linki.retrieval.evidence_pack import estimate_tokens
@@ -30,10 +33,37 @@ def ranking_metrics(evidence: list[dict], gold: list[str] | None) -> dict[str, f
 
 def run_retrieval_eval(
     dataset: list[dict[str, Any]], retrieve_fn, kb: str, *, progress=None,
+    checkpoint_path: str | Path | None = None,
+    checkpoint_every: int = 25,
+    protocol: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    checkpoint = Path(checkpoint_path) if checkpoint_path else None
+    run_protocol = {
+        **(protocol or {}),
+        "kb": kb,
+        "dataset_fingerprint": hashlib.sha256(json.dumps([
+            {"id": row.get("id"), "question": row.get("question"), "expect": row.get("expect")}
+            for row in dataset
+        ], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16],
+    }
     items: list[dict[str, Any]] = []
+    if checkpoint and checkpoint.exists():
+        try:
+            existing = json.loads(checkpoint.read_text(encoding="utf-8"))
+            if existing.get("protocol") != run_protocol:
+                raise ValueError(
+                    f"checkpoint protocol mismatch at {checkpoint}; archive or remove it before a new experiment"
+                )
+            items = existing.get("items", [])
+        except json.JSONDecodeError:
+            items = []
+    completed = {item.get("id") for item in items}
     by_type: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for item in items:
+        by_type[item["question_type"]].append(item)
     for index, row in enumerate(dataset, start=1):
+        if row.get("id") in completed:
+            continue
         started = time.perf_counter()
         evidence = retrieve_fn(row["question"], kb) or []
         elapsed = time.perf_counter() - started
@@ -59,6 +89,13 @@ def run_retrieval_eval(
         }
         items.append(result)
         by_type[result["question_type"]].append(result)
+        if checkpoint and (len(items) % checkpoint_every == 0):
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            temporary = checkpoint.with_suffix(checkpoint.suffix + ".tmp")
+            temporary.write_text(json.dumps({
+                "protocol": run_protocol, "complete": False, "items": items,
+            }, indent=2), encoding="utf-8")
+            temporary.replace(checkpoint)
         if progress and (index % 100 == 0 or index == len(dataset)):
             progress(f"retrieved {index}/{len(dataset)} questions")
 
@@ -83,8 +120,16 @@ def run_retrieval_eval(
         }
         return out
 
-    return {
+    report = {
+        "protocol": run_protocol,
         "aggregate": aggregate(items),
         "by_question_type": {name: aggregate(rows) for name, rows in sorted(by_type.items())},
         "items": items,
+        "complete": len(items) == len(dataset),
     }
+    if checkpoint:
+        checkpoint.parent.mkdir(parents=True, exist_ok=True)
+        temporary = checkpoint.with_suffix(checkpoint.suffix + ".tmp")
+        temporary.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        temporary.replace(checkpoint)
+    return report

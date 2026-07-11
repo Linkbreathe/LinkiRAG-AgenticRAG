@@ -110,6 +110,7 @@ class Settings:
     enable_dedup: bool = True  # Post: drop parents already collected this run
     enable_hook_trace: bool = True  # Post: emit retrieval events to the tracer
     enable_trace: bool = True  # write per-run JSONL + timeline.md under data_dir
+    enable_telemetry_persistence: bool = True
     enable_persistent_cache: bool = True
     enable_answer_cache: bool = True
     enable_semantic_cache: bool = False  # requires a separately calibrated adapter
@@ -220,6 +221,7 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
         "adaptive_enabled", "execution_mode", "default_deadline_ms", "max_concurrency",
         "adaptive_low_score_threshold", "adaptive_min_score_margin",
         "enable_cache", "enable_dedup", "enable_hook_trace", "enable_trace",
+        "enable_telemetry_persistence",
         "qdrant_url", "qdrant_api_key_env", "qdrant_prefer_grpc",
         "enable_persistent_cache", "enable_answer_cache", "enable_semantic_cache",
         "answer_cache_ttl_seconds", "retrieval_cache_ttl_seconds",

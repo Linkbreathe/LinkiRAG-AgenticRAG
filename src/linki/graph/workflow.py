@@ -572,7 +572,7 @@ def _finalize_result(result, *, run_id, request_context, snapshot_ids, telemetry
         "output_tokens": result["cost"]["output_tokens"],
         "total_ms": result["cost"]["latency_ms"],
     })
-    if data_dir is not None:
+    if data_dir is not None and getattr(settings, "enable_telemetry_persistence", True):
         telemetry.persist(Path(data_dir) / "telemetry")
     return result
 

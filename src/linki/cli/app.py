@@ -749,15 +749,40 @@ def eval_cmd(
     console.print(f"💾 saved report → {out_path}")
 
 
+def _ensure_benchmark_snapshot(settings, dest: Path) -> str:
+    import json
+
+    from linki.ingestion.indexer import VectorStoreManager
+    from linki.knowledge.snapshots import SnapshotManifest, file_digest, index_version
+
+    manifest = SnapshotManifest(settings.snapshot_manifest_path)
+    active = manifest.active_id(settings.default_kb.name)
+    if active:
+        return active
+    points = VectorStoreManager(settings).collection_points(settings.default_kb.collection)
+    if points is None:
+        raise ValueError("benchmark index is missing; run linki bench-ingest")
+    corpus_path = dest / "corpus.json"
+    documents = len(json.loads(corpus_path.read_text(encoding="utf-8")))
+    questions = sum(1 for line in (dest / "dataset.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
+    return manifest.promote(
+        settings.default_kb.name,
+        artifact_digest=file_digest(corpus_path),
+        index_version=index_version(settings),
+        stats={"documents": documents, "questions": questions, "children": int(points)},
+        metadata={"registered_existing_index": True, "benchmark": "multihop-rag"},
+    ).snapshot_id
+
+
 @app.command("bench-retrieval")
 def bench_retrieval(
     benchmark: str = typer.Option("multihop-rag", "--benchmark"),
     limit: Optional[int] = typer.Option(None, "--limit", min=1),
     seed: int = typer.Option(0, "--seed"),
+    variant: str = typer.Option("all", "--variant", help="legacy_k5|rerank_pack|rerank_ppr|all"),
 ) -> None:
-    """Run deterministic retrieval metrics over a prepared benchmark without LLM calls."""
+    """Run checkpointed full retrieval ablations without LLM or gold leakage."""
     import json
-    from datetime import datetime
 
     if benchmark != "multihop-rag":
         console.print("[red]Supported benchmark: multihop-rag.[/red]")
@@ -773,19 +798,189 @@ def bench_retrieval(
     rows = load_dataset(dest / "dataset.jsonl")
     if limit is not None:
         rows = multihop_rag.select_stratified(rows, limit, seed=seed)
-    report = run_retrieval_eval(
-        rows, make_retrieve_fn(settings), settings.default_kb.tool_name,
-        progress=console.print,
-    )
-    console.print(json.dumps({
-        "aggregate": report["aggregate"],
-        "by_question_type": report["by_question_type"],
-    }, indent=2))
+    variants = ["legacy_k5", "rerank_pack", "rerank_ppr"] if variant == "all" else [variant]
+    if any(name not in {"legacy_k5", "rerank_pack", "rerank_ppr"} for name in variants):
+        console.print("[red]variant must be legacy_k5, rerank_pack, rerank_ppr, or all.[/red]")
+        raise typer.Exit(1)
+    corpus = dest / "corpus.json"
+    try:
+        snapshot_id = _ensure_benchmark_snapshot(settings, dest)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    graph = multihop_rag.CorpusPPRGraphRetriever(corpus) if "rerank_ppr" in variants else None
     out_dir = settings.data_dir / "eval"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"retrieval-{datetime.now():%Y%m%d-%H%M%S}.json"
-    out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    console.print(f"💾 saved report → {out_path}")
+    matrix: dict[str, object] = {
+        "protocol": {
+            "benchmark": benchmark, "rows": len(rows), "seed": seed,
+            "gold_used_by_retriever": False, "warmup_excluded": True,
+            "corpus_snapshot_id": snapshot_id,
+        },
+        "variants": {},
+    }
+    for name in variants:
+        console.print(f"🔎 retrieval variant={name} rows={len(rows)}")
+        variant_protocol = {
+            **matrix["protocol"], "variant": name,
+            "candidate_k": settings.candidate_k if name != "legacy_k5" else settings.retrieval_k,
+            "rerank_k": settings.rerank_k if name != "legacy_k5" else None,
+            "ppr": name == "rerank_ppr", "reranker_score_cache": False,
+        }
+        retrieve_fn = make_retrieve_fn(
+            settings, variant=name,
+            graph_retriever=graph if name == "rerank_ppr" else None,
+            cache_rerank_scores=False,
+        )
+        # Load embeddings/reranker before timing benchmark rows.
+        retrieve_fn("Linki benchmark warmup query", settings.default_kb.tool_name)
+        suffix = f"n{len(rows)}-seed{seed}"
+        checkpoint = out_dir / f"retrieval-{name}-{suffix}.json"
+        report = run_retrieval_eval(
+            rows, retrieve_fn, settings.default_kb.tool_name,
+            progress=console.print, checkpoint_path=checkpoint,
+            protocol=variant_protocol,
+        )
+        checkpoint.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        matrix["variants"][name] = report["aggregate"]
+        console.print(json.dumps(report["aggregate"], indent=2))
+    matrix_path = out_dir / f"retrieval-matrix-n{len(rows)}-seed{seed}.json"
+    matrix_path.write_text(json.dumps(matrix, indent=2), encoding="utf-8")
+    console.print(f"💾 saved matrix → {matrix_path}")
+
+
+@app.command("bench-fair")
+def bench_fair(
+    benchmark: str = typer.Option("multihop-rag", "--benchmark"),
+    fold_size: int = typer.Option(40, "--fold-size", min=1),
+) -> None:
+    """Run four counterbalanced E2E systems on three disjoint fixed-seed folds."""
+    if benchmark != "multihop-rag":
+        console.print("[red]Supported benchmark: multihop-rag.[/red]")
+        raise typer.Exit(1)
+    from linki.eval.benchmarks import multihop_rag
+    from linki.eval.fair_eval import format_fair_report, run_fair_eval
+    from linki.eval.run_eval import load_dataset
+    from linki.tools.retrieve import Retriever
+
+    base = load_settings()
+    dest = base.data_dir / "benchmarks" / benchmark
+    settings = multihop_rag.benchmark_settings(base, dest)
+    dataset_path, corpus_path = dest / "dataset.jsonl", dest / "corpus.json"
+    if not dataset_path.exists() or not corpus_path.exists():
+        console.print("[red]Benchmark is not prepared. Run linki bench-prep and bench-ingest.[/red]")
+        raise typer.Exit(1)
+    rows = multihop_rag.select_disjoint_stratified_folds(
+        load_dataset(dataset_path), fold_size=fold_size, seeds=(42, 123, 2026),
+    )
+    try:
+        snapshot_id = _ensure_benchmark_snapshot(settings, dest)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    try:
+        settings, model, judge, _ = _build_runtime(settings=settings)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    fair_retriever = Retriever(settings, cache_rerank_scores=False)
+    retrieval = {
+        "legacy_k5": fair_retriever.retrieve_legacy,
+        "rerank_pack": fair_retriever.retrieve,
+    }
+    for retrieve_fn in retrieval.values():
+        retrieve_fn("Linki E2E warmup query", settings.default_kb.tool_name)
+    out_dir = settings.data_dir / "eval"
+    checkpoint = out_dir / f"fair-adaptive-{fold_size * 3}.json"
+    console.print(
+        f"🧪 E2E rows={len(rows)} · folds=42/123/2026 · systems=4 · checkpoint={checkpoint}"
+    )
+    report = run_fair_eval(
+        rows, model=model, judge=judge, settings=settings,
+        retrieval=retrieval, checkpoint_path=checkpoint,
+        corpus_snapshot_id=snapshot_id, progress=console.print,
+    )
+    console.print(format_fair_report(report))
+    console.print(f"💾 saved fair report → {checkpoint}")
+
+
+@app.command("bench-memory")
+def bench_memory() -> None:
+    """Run the project-owned governed-memory regression suite."""
+    import json
+
+    from linki.eval.memory_eval import run_memory_eval
+
+    settings = load_settings()
+    out_dir = settings.data_dir / "eval"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    report = run_memory_eval()
+    path = out_dir / "memory-governance.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    console.print_json(data=report["metrics"])
+    console.print(f"💾 saved memory report → {path}")
+
+
+@app.command("bench-stability")
+def bench_stability(
+    benchmark: str = typer.Option("multihop-rag", "--benchmark"),
+    limit: int = typer.Option(120, "--limit", min=1),
+    seed: int = typer.Option(42, "--seed"),
+    repeats: int = typer.Option(3, "--repeats", min=2),
+    with_answers: bool = typer.Option(
+        False, "--with-answers", help="Also repeat a temperature-0 evidence-grounded answer call.",
+    ),
+) -> None:
+    """Repeat retrieval to measure top-k stability, latency variance, and errors."""
+    import json
+
+    if benchmark != "multihop-rag":
+        console.print("[red]Supported benchmark: multihop-rag.[/red]")
+        raise typer.Exit(1)
+    from linki.eval.benchmarks import multihop_rag
+    from linki.eval.run_eval import load_dataset
+    from linki.eval.stability_eval import run_stability_eval
+    from linki.tools.retrieve import make_retrieve_fn
+
+    base = load_settings()
+    dest = base.data_dir / "benchmarks" / benchmark
+    settings = multihop_rag.benchmark_settings(base, dest)
+    rows = multihop_rag.select_stratified(
+        load_dataset(dest / "dataset.jsonl"), limit, seed=seed,
+    )
+    retrieve_fn = make_retrieve_fn(
+        settings, variant="rerank_pack", cache_rerank_scores=False,
+    )
+    retrieve_fn("Linki stability warmup query", settings.default_kb.tool_name)
+    answer_fn = None
+    if with_answers:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        from linki.core.providers import create_main_model
+        from linki.eval.naive import NAIVE_PROMPT
+
+        model = create_main_model(settings, temperature=0.0)
+
+        def answer_fn(question, evidence):
+            rendered = "\n\n".join(
+                f"[{index}] ({hit.get('source', '?')}) {hit.get('text', '').strip()}"
+                for index, hit in enumerate(evidence, start=1)
+            ) or "(no evidence retrieved)"
+            return model.invoke([
+                SystemMessage(content=NAIVE_PROMPT),
+                HumanMessage(content=f"Question: {question}\n\nEvidence:\n{rendered}"),
+            ]).content
+    report = run_stability_eval(
+        rows, retrieve_fn, settings.default_kb.tool_name,
+        repeats=repeats, answer_fn=answer_fn, progress=console.print,
+    )
+    out_dir = settings.data_dir / "eval"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    suffix = "answers" if with_answers else "retrieval"
+    path = out_dir / f"stability-{suffix}-n{len(rows)}-seed{seed}-r{repeats}.json"
+    path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    console.print_json(data=report["aggregate"])
+    console.print(f"💾 saved stability report → {path}")
 
 
 @app.command()

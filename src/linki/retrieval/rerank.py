@@ -35,9 +35,16 @@ class CrossEncoderReranker:
     _model_errors: dict[str, str] = {}
     _lock = threading.Lock()
 
-    def __init__(self, model_name: str = DEFAULT_RERANKER, *, enabled: bool = True):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_RERANKER,
+        *,
+        enabled: bool = True,
+        cache_scores: bool = True,
+    ):
         self.model_name = model_name
         self.enabled = enabled
+        self.cache_scores = cache_scores
         self._scores: dict[tuple[str, str, str], float] = {}
 
     @staticmethod
@@ -66,11 +73,12 @@ class CrossEncoderReranker:
         candidates = list(candidates)
         if not candidates:
             return [], "empty"
+        scores = self._scores if self.cache_scores else {}
         qh = self._hash(query)
         missing: list[Candidate] = []
         for candidate in candidates:
             key = (qh, self._hash(candidate.child_text), self.model_name)
-            if key not in self._scores:
+            if key not in scores:
                 missing.append(candidate)
 
         model = self._model()
@@ -81,21 +89,21 @@ class CrossEncoderReranker:
                     values = list(model.rerank(query, [item.child_text for item in missing]))
                     for candidate, value in zip(missing, values, strict=True):
                         key = (qh, self._hash(candidate.child_text), self.model_name)
-                        self._scores[key] = float(value)
+                        scores[key] = float(value)
                 except Exception as exc:
                     backend = "lexical-fallback"
                     self._model_errors[self.model_name] = f"{exc.__class__.__name__}: {exc}"
                     for candidate in missing:
                         key = (qh, self._hash(candidate.child_text), self.model_name)
-                        self._scores[key] = lexical_score(query, candidate.child_text)
+                        scores[key] = lexical_score(query, candidate.child_text)
             else:
                 for candidate in missing:
                     key = (qh, self._hash(candidate.child_text), self.model_name)
-                    self._scores[key] = lexical_score(query, candidate.child_text)
+                    scores[key] = lexical_score(query, candidate.child_text)
 
         ranked = [
             candidate.with_rerank_score(
-                self._scores[(qh, self._hash(candidate.child_text), self.model_name)]
+                scores[(qh, self._hash(candidate.child_text), self.model_name)]
             )
             for candidate in candidates
         ]

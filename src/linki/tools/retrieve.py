@@ -17,7 +17,13 @@ from linki.retrieval.spans import select_supporting_span
 
 
 class Retriever:
-    def __init__(self, settings: Settings, *, graph_retriever: GraphRetriever | None = None):
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        graph_retriever: GraphRetriever | None = None,
+        cache_rerank_scores: bool = True,
+    ):
         self._s = settings
         self._registry = KnowledgeBaseRegistry(settings)
         self._vectors = VectorStoreManager(settings)
@@ -25,6 +31,7 @@ class Retriever:
         self._reranker = CrossEncoderReranker(
             getattr(settings, "reranker_model", "Xenova/ms-marco-MiniLM-L-6-v2"),
             enabled=getattr(settings, "enable_local_reranker", True),
+            cache_scores=cache_rerank_scores,
         )
         self._graph = graph_retriever
 
@@ -155,18 +162,34 @@ def _seed_entities(query: str) -> list[str]:
     return list(dict.fromkeys(latin + cjk))[:8]
 
 
-def make_retrieve_fn(settings: Settings, *, variant: str = "rerank_pack"):
+def make_retrieve_fn(
+    settings: Settings,
+    *,
+    variant: str = "rerank_pack",
+    graph_retriever: GraphRetriever | None = None,
+    cache_rerank_scores: bool = True,
+):
     """Return a ``retrieve_fn(query, kb_tool_name) -> list[Evidence]`` bound to a
     single Retriever (embeddings load once)."""
-    graph_retriever = None
-    if getattr(settings, "graph_retrieval", "none") == "ppr_pilot":
+    if graph_retriever is None and getattr(settings, "graph_retrieval", "none") == "ppr_pilot":
         from linki.knowledge.graph import ContextualLedgerGraphRetriever
         from linki.knowledge.service import get_knowledge_service
 
         graph_retriever = ContextualLedgerGraphRetriever(get_knowledge_service(settings))
-    retriever = Retriever(settings, graph_retriever=graph_retriever)
+    if variant == "rerank_ppr" and graph_retriever is None:
+        raise ValueError("rerank_ppr requires an explicit graph_retriever built without gold labels")
+    retriever_settings = settings
+    if variant == "rerank_ppr" and getattr(settings, "graph_retrieval", "none") != "ppr_pilot":
+        from dataclasses import replace
+
+        retriever_settings = replace(settings, graph_retrieval="ppr_pilot")
+    retriever = Retriever(
+        retriever_settings,
+        graph_retriever=graph_retriever,
+        cache_rerank_scores=cache_rerank_scores,
+    )
     if variant == "legacy_k5":
         return retriever.retrieve_legacy
-    if variant != "rerank_pack":
-        raise ValueError("retrieval variant must be legacy_k5 or rerank_pack")
+    if variant not in {"rerank_pack", "rerank_ppr"}:
+        raise ValueError("retrieval variant must be legacy_k5, rerank_pack, or rerank_ppr")
     return retriever.retrieve
