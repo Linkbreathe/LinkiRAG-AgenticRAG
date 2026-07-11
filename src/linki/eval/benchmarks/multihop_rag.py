@@ -118,11 +118,13 @@ def benchmark_settings(settings: Any, dest: str | Path):
         qdrant_path=dest / "qdrant",
         parent_store_path=dest / "parent_store",
         markdown_dir=dest / "markdown",
+        cache_path=dest / "runtime" / "cache" / "linki.sqlite3",
+        snapshot_manifest_path=dest / "runtime" / "snapshots" / "manifest.json",
         knowledge_bases=[kb],
     )
 
 
-def ingest_corpus(settings: Any, corpus_path: str | Path, *, batch_size: int = 256, progress=print) -> dict[str, int]:
+def ingest_corpus(settings: Any, corpus_path: str | Path, *, batch_size: int = 256, progress=print) -> dict[str, Any]:
     """Chunk and index all 609 documents through Linki's production chunker."""
     from linki.ingestion.chunker import DocumentChunker
     from linki.ingestion.indexer import ParentStore, VectorStoreManager
@@ -164,5 +166,14 @@ def ingest_corpus(settings: Any, corpus_path: str | Path, *, batch_size: int = 2
         if progress:
             progress(f"indexed {min(start + batch_size, len(child_docs))}/{len(child_docs)} child chunks")
     parents.save_many(parent_pairs)
-    return {"documents": len(corpus), "parents": len(parent_pairs), "children": len(child_docs)}
+    stats = {"documents": len(corpus), "parents": len(parent_pairs), "children": len(child_docs)}
+    from linki.knowledge.snapshots import SnapshotManifest, file_digest, index_version
 
+    snapshot = SnapshotManifest(settings.snapshot_manifest_path).promote(
+        kb.name,
+        artifact_digest=file_digest(corpus_path),
+        index_version=index_version(settings),
+        stats=stats,
+        metadata={"source": str(corpus_path), "collection": kb.collection, "benchmark": "multihop-rag"},
+    )
+    return {**stats, "snapshot_id": snapshot.snapshot_id}

@@ -229,3 +229,61 @@ def invoke_model(
         "total_ms": round(elapsed, 3),
     })
     return response
+
+
+async def ainvoke_model(
+    model: Any,
+    messages: Any,
+    *,
+    node: str,
+    prompt_version: str,
+    policy_path: str = "unclassified",
+    reserve_after: int = 0,
+) -> Any:
+    """Async provider exit; sync-only doubles run in the event loop's executor."""
+    import asyncio
+
+    from linki.core.trace import emit_event
+
+    input_text = _message_text(messages)
+    telemetry = _current_telemetry.get()
+    call_index = telemetry.begin_call(
+        input_token_estimate=_estimate_tokens(input_text), reserve_after=reserve_after,
+    ) if telemetry else 0
+    started = time.perf_counter()
+    try:
+        if callable(getattr(model, "ainvoke", None)):
+            response = await model.ainvoke(messages)
+        else:
+            response = await asyncio.to_thread(model.invoke, messages)
+    except Exception as exc:
+        elapsed = (time.perf_counter() - started) * 1000.0
+        if telemetry:
+            telemetry.add(NodeCost(
+                run_id=telemetry.run_id, node=node, call_index=call_index,
+                model=_model_name(model), prompt_version=prompt_version,
+                policy_path=policy_path, input_tokens=_estimate_tokens(input_text),
+                cached_input_tokens=None, output_tokens=0, queue_ms=None,
+                ttft_ms=None, total_ms=round(elapsed, 3), cost_usd=None,
+                status="error", usage_source="estimated", error=exc.__class__.__name__,
+            ))
+        raise
+    elapsed = (time.perf_counter() - started) * 1000.0
+    input_tokens, output_tokens, cached, source = _usage(response, input_text)
+    if telemetry:
+        telemetry.add(NodeCost(
+            run_id=telemetry.run_id, node=node, call_index=call_index,
+            model=_model_name(model, response), prompt_version=prompt_version,
+            policy_path=policy_path, input_tokens=input_tokens,
+            cached_input_tokens=cached, output_tokens=output_tokens,
+            queue_ms=None, ttft_ms=None, total_ms=round(elapsed, 3),
+            cost_usd=None, status="ok", usage_source=source,
+        ))
+    emit_event({
+        "node": node, "type": "model_call", "call_index": call_index,
+        "prompt_version": prompt_version, "policy_path": policy_path,
+        "model": _model_name(model, response), "input_tokens": input_tokens,
+        "output_tokens": output_tokens, "usage_source": source,
+        "total_ms": round(elapsed, 3), "async": True,
+    })
+    return response

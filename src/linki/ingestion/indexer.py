@@ -112,8 +112,18 @@ class VectorStoreManager:
     def _ensure_client(self):
         if self._client is not None:
             return
+        import os
+
         from qdrant_client import QdrantClient
 
+        if getattr(self._s, "qdrant_url", None):
+            key = os.getenv(getattr(self._s, "qdrant_api_key_env", "QDRANT_API_KEY"))
+            self._client = QdrantClient(
+                url=self._s.qdrant_url,
+                api_key=key,
+                prefer_grpc=getattr(self._s, "qdrant_prefer_grpc", False),
+            )
+            return
         Path(self._s.qdrant_path).mkdir(parents=True, exist_ok=True)
         self._client = QdrantClient(path=str(self._s.qdrant_path))
 
@@ -181,7 +191,7 @@ class Indexer:
         self.vectors = VectorStoreManager(settings)
         self.parents = ParentStore(settings.parent_store_path)
 
-    def ingest_document(self, path: str | Path, kb: KnowledgeBase) -> dict[str, int]:
+    def ingest_document(self, path: str | Path, kb: KnowledgeBase) -> dict[str, Any]:
         from linki.ingestion.chunker import DocumentChunker
         from linki.ingestion.loader import load_document
 
@@ -216,7 +226,17 @@ class Indexer:
         vs.add_documents(child_docs, ids=point_ids)
         self.parents.save_many(parent_pairs)
 
-        return {"parents": len(parent_pairs), "children": len(child_docs)}
+        stats = {"parents": len(parent_pairs), "children": len(child_docs)}
+        from linki.knowledge.snapshots import SnapshotManifest, file_digest, index_version
+
+        snapshot = SnapshotManifest(self._s.snapshot_manifest_path).promote(
+            kb.name,
+            artifact_digest=file_digest(path),
+            index_version=index_version(self._s),
+            stats=stats,
+            metadata={"source": source_name, "collection": kb.collection},
+        )
+        return {**stats, "snapshot_id": snapshot.snapshot_id}
 
     def clear(self, kb: KnowledgeBase) -> None:
         """Drop a knowledge base's vector collection and parent store."""

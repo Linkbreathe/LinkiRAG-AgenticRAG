@@ -16,7 +16,11 @@ if TYPE_CHECKING:
 
     from linki.config import Settings
 
-_ENV_KEY = {"openai": "OPENAI_API_KEY", "deepseek": "DEEPSEEK_API_KEY"}
+_ENV_KEY = {
+    "openai": "OPENAI_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "gateway": "LINKI_GATEWAY_API_KEY",
+}
 
 
 def _required_env(name: str) -> str:
@@ -56,6 +60,13 @@ def create_model(provider: str = "openai", model: str | None = None, *, temperat
             model=model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
             api_key=_required_env("DEEPSEEK_API_KEY"),
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+            temperature=temperature,
+        )
+    if provider == "gateway":
+        return ChatOpenAI(
+            model=model or os.getenv("LINKI_GATEWAY_MODEL", "gpt-4o-mini"),
+            api_key=_required_env("LINKI_GATEWAY_API_KEY"),
+            base_url=_required_env("LINKI_GATEWAY_BASE_URL"),
             temperature=temperature,
         )
     raise ValueError(f"Unsupported provider: {provider}")

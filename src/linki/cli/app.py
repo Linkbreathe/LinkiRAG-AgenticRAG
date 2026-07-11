@@ -81,6 +81,7 @@ def ingest(
     console.print(f"📄 Ingesting {path} → {kb_obj.collection} …")
     stats = Indexer(settings).ingest_document(path, kb_obj)
     console.print(f"🧩 parents={stats['parents']} / children={stats['children']}")
+    console.print(f"🔖 snapshot={stats['snapshot_id']}")
     console.print(f"📦 indexed into local Qdrant at {settings.qdrant_path}")
 
 
@@ -89,10 +90,15 @@ def ask(
     question: str = typer.Argument(..., help="Your question."),
     debug: bool = typer.Option(False, "--debug", help="Print routing/retrieval decisions."),
     mode: str = typer.Option("auto", "--mode", help="Execution mode: auto|fast|balanced|deep."),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant isolation key."),
+    user: str = typer.Option("anonymous", "--user", help="User scope for caches and memory."),
+    acl: str = typer.Option("public", "--acl", help="Comma-separated authorization scopes."),
     deadline_ms: Optional[int] = typer.Option(None, "--deadline-ms", min=1, help="Request deadline in milliseconds."),
 ) -> None:
     """Answer a single question through the full Agentic RAG graph."""
-    from linki.graph.workflow import answer_question
+    import asyncio
+
+    from linki.graph.workflow import answer_question_async
 
     try:
         settings, model, judge, retrieve_fn = _build_runtime(debug)
@@ -101,10 +107,17 @@ def ask(
         raise typer.Exit(1)
 
     try:
-        state = answer_question(
+        from linki.core.context import RequestContext
+
+        state = asyncio.run(answer_question_async(
             question, model=model, judge=judge, settings=settings, retrieve_fn=retrieve_fn,
             execution_mode=mode, deadline_ms=deadline_ms,
-        )
+            request_context=RequestContext(
+                tenant_id=tenant,
+                user_id=user,
+                acl=tuple(item.strip() for item in acl.split(",") if item.strip()),
+            ),
+        ))
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(2)
@@ -173,7 +186,10 @@ def bench_ingest(
     settings = multihop_rag.benchmark_settings(base, dest)
     console.print(f"📚 Indexing official MultiHop-RAG corpus → {settings.qdrant_path}")
     stats = multihop_rag.ingest_corpus(settings, corpus, progress=console.print)
-    console.print(f"✅ indexed documents={stats['documents']} parents={stats['parents']} children={stats['children']}")
+    console.print(
+        f"✅ indexed documents={stats['documents']} parents={stats['parents']} "
+        f"children={stats['children']} snapshot={stats['snapshot_id']}"
+    )
 
 
 @app.command("eval")
