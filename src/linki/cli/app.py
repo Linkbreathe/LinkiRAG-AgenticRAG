@@ -12,7 +12,116 @@ from rich.panel import Panel
 from linki.config import load_settings
 
 app = typer.Typer(add_completion=False, help="Linki — Agentic RAG knowledge assistant.")
+memory_app = typer.Typer(help="Inspect and govern long-term user memory.")
+app.add_typer(memory_app, name="memory")
 console = Console()
+
+
+def _memory_runtime(tenant: str, user: str):
+    from linki.core.context import RequestContext
+    from linki.memory.service import get_memory_service
+
+    settings = load_settings()
+    return get_memory_service(settings), RequestContext(tenant, user, ("public",))
+
+
+@memory_app.command("list")
+def memory_list(
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+    include_deleted: bool = typer.Option(False, "--include-deleted"),
+) -> None:
+    """List current memory versions in this tenant/user namespace."""
+    service, context = _memory_runtime(tenant, user)
+    console.print_json(data=service.export(context=context, include_deleted=include_deleted))
+
+
+@memory_app.command("remember")
+def memory_remember(
+    statement: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+) -> None:
+    """Store an explicit user preference through the promotion policy."""
+    service, context = _memory_runtime(tenant, user)
+    console.print_json(data=service.remember_explicit(statement, context=context).as_dict())
+
+
+@memory_app.command("edit")
+def memory_edit(
+    memory_id: str = typer.Argument(...),
+    statement: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+) -> None:
+    """Create a newer version and supersede an active preference."""
+    service, context = _memory_runtime(tenant, user)
+    try:
+        item = service.edit(memory_id, statement, context=context)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=item.as_dict())
+
+
+@memory_app.command("forget")
+def memory_forget(
+    identifier: str = typer.Argument(..., help="Memory id, matching text, or 'all'."),
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+) -> None:
+    """Tombstone matching memories and purge their recoverable payload."""
+    service, context = _memory_runtime(tenant, user)
+    deleted = service.forget(identifier, context=context)
+    console.print_json(data={"deleted": [item.memory_id for item in deleted], "count": len(deleted)})
+
+
+@memory_app.command("why")
+def memory_why(
+    memory_id: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+) -> None:
+    """Show provenance episodes and every promotion/state event."""
+    service, context = _memory_runtime(tenant, user)
+    item = service.ledger.current(memory_id)
+    if item is None or item.tenant_id != context.tenant_id or item.user_id != context.user_id:
+        console.print("[red]Memory not found in this scope.[/red]")
+        raise typer.Exit(1)
+    episodes = [service.ledger.get_episode(source) for source in item.source_episode_ids]
+    console.print_json(data={
+        "memory": item.as_dict(),
+        "episodes": [episode.__dict__ for episode in episodes if episode is not None],
+        "events": service.ledger.events(memory_id),
+    })
+
+
+@memory_app.command("export")
+def memory_export(
+    output: Optional[str] = typer.Option(None, "--output"),
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+) -> None:
+    """Export the current namespace as auditable JSON."""
+    import json
+
+    service, context = _memory_runtime(tenant, user)
+    payload = service.export(context=context, include_deleted=True)
+    if output:
+        Path(output).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        console.print(f"exported {len(payload)} memories → {output}")
+    else:
+        console.print_json(data=payload)
+
+
+@memory_app.command("erase-user")
+def memory_erase_user(
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+) -> None:
+    """Apply user-scope tombstones and redact raw episode payloads."""
+    service, context = _memory_runtime(tenant, user)
+    console.print_json(data=service.ledger.erase_user(context.tenant_id, context.user_id))
 
 
 def _build_runtime(debug: bool = False, settings=None):

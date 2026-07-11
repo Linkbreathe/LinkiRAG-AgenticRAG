@@ -338,6 +338,7 @@ def answer_node(state: LinkiGraphState) -> dict[str, Any]:
     numbered, mapping = number_evidence(evidence)
     gaps = state.get("gaps") or []
     gaps_block = "\n".join(f"- {g}" for g in gaps) if gaps else "（无 / none）"
+    memory_block = state.get("memory_context") or "（无 / none）"
 
     reply = _text(
         _invoke(
@@ -349,7 +350,8 @@ def answer_node(state: LinkiGraphState) -> dict[str, Any]:
                     content=(
                         f"Question: {state['question']}\n\n"
                         f"<evidence>\n{render_evidence(numbered)}\n</evidence>\n"
-                        f"<gaps>\n{gaps_block}\n</gaps>"
+                        f"<gaps>\n{gaps_block}\n</gaps>\n"
+                        f"<memory>\n{memory_block}\n</memory>"
                     )
                 ),
             ],

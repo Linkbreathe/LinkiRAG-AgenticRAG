@@ -86,6 +86,9 @@ class LinkiGraphState(TypedDict, total=False):
     session_context: str
     execution_mode: str
     deadline_ms: int | None
+    memory_context: str
+    memory_snapshot_id: str
+    recalled_memories: list[dict[str, Any]]
 
     # —— runtime deps (injected at invoke time) ——
     model: Any

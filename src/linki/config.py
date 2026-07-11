@@ -51,6 +51,7 @@ class Settings:
     markdown_dir: Path = Path(".linki/markdown")
     cache_path: Path = Path(".linki/cache/linki.sqlite3")
     snapshot_manifest_path: Path = Path(".linki/snapshots/manifest.json")
+    memory_path: Path = Path(".linki/memory/ledger.sqlite3")
     qdrant_url: str | None = None  # set for server/Cloud; local path remains default
     qdrant_api_key_env: str = "QDRANT_API_KEY"
     qdrant_prefer_grpc: bool = False
@@ -113,6 +114,12 @@ class Settings:
     answer_cache_ttl_seconds: int = 86_400
     retrieval_cache_ttl_seconds: int = 604_800
 
+    # —— governed long-term memory (Stage 11) ——
+    enable_memory: bool = True
+    memory_background_formation: bool = True
+    memory_token_budget: int = 300
+    episodic_retention_days: int = 90
+
     # —— knowledge bases ——
     knowledge_bases: list[KnowledgeBase] = field(
         default_factory=lambda: [
@@ -139,6 +146,7 @@ class Settings:
             markdown_dir=anchor(self.markdown_dir),
             cache_path=anchor(self.cache_path),
             snapshot_manifest_path=anchor(self.snapshot_manifest_path),
+            memory_path=anchor(self.memory_path),
         )
 
     def kb(self, name: str) -> KnowledgeBase | None:
@@ -207,12 +215,14 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
         "qdrant_url", "qdrant_api_key_env", "qdrant_prefer_grpc",
         "enable_persistent_cache", "enable_answer_cache", "enable_semantic_cache",
         "answer_cache_ttl_seconds", "retrieval_cache_ttl_seconds",
+        "enable_memory", "memory_background_formation", "memory_token_budget",
+        "episodic_retention_days",
     ):
         if key in data:
             kwargs[key] = data[key]
     for key in (
         "data_dir", "qdrant_path", "parent_store_path", "markdown_dir",
-        "cache_path", "snapshot_manifest_path",
+        "cache_path", "snapshot_manifest_path", "memory_path",
     ):
         if key in data:
             kwargs[key] = Path(data[key])

@@ -140,6 +140,7 @@ _ANSWER_CACHE_FIELDS = (
     "answer", "final_answer", "citations", "packed_evidence", "evidence_pack",
     "evidence_pack_id", "verified", "verification_error", "verify_issues",
     "retrieval_risk", "answer_risk", "gaps", "attempts",
+    "memory_snapshot_id", "recalled_memories",
 )
 
 
@@ -160,6 +161,106 @@ def _snapshot_ids(settings: Any) -> dict[str, str]:
 
     path = getattr(settings, "snapshot_manifest_path", None)
     return SnapshotManifest(path).active_ids() if path is not None else {}
+
+
+def _recall_memory(settings: Any, request_context: Any, question: str):
+    if not getattr(settings, "enable_memory", False) or not getattr(settings, "memory_path", None):
+        return None, [], "", "none"
+    from linki.memory.retriever import MemoryRetriever, render_memory_context
+    from linki.memory.service import get_memory_service
+
+    service = get_memory_service(settings)
+    service.ledger.expire_due()
+    recalled = MemoryRetriever(service.ledger).retrieve(
+        question,
+        tenant_id=request_context.tenant_id,
+        user_id=request_context.user_id,
+    )
+    rendered = render_memory_context(
+        recalled, getattr(settings, "memory_token_budget", 300),
+    )
+    snapshot = service.ledger.snapshot_id(
+        request_context.tenant_id, request_context.user_id,
+    )
+    return service, recalled, rendered, snapshot
+
+
+def _record_memory_episode(
+    service: Any,
+    *,
+    question: str,
+    result: dict[str, Any],
+    request_context: Any,
+    settings: Any,
+    run_id: str,
+    thread_id: str,
+) -> None:
+    if service is None:
+        return
+    service.record_turn(
+        question,
+        result.get("final_answer") or result.get("answer") or "",
+        context=request_context,
+        thread_id=thread_id,
+        run_id=run_id,
+        background=getattr(settings, "memory_background_formation", True),
+    )
+
+
+def _handle_memory_command(
+    question: str,
+    *,
+    service: Any,
+    request_context: Any,
+    snapshots: dict[str, str],
+    run_id: str,
+) -> dict[str, Any] | None:
+    if service is None:
+        return None
+    from linki.memory.service import parse_memory_command
+    from linki.routing.policy import PATH_BUDGETS
+
+    command = parse_memory_command(question)
+    if command is None:
+        return None
+    action, value = command
+    if action == "remember":
+        item = service.remember_explicit(value, context=request_context)
+        if item.status == "ACTIVE":
+            answer = f"已记住这项偏好（{item.memory_id}）。你可以随时要求我忘记它。"
+        else:
+            answer = f"这项内容未自动启用，当前状态为 {item.status}（{item.memory_id}）。"
+        affected = [item.as_dict()]
+    else:
+        deleted = service.forget(value, context=request_context)
+        answer = f"已忘记 {len(deleted)} 项匹配的记忆。" if deleted else "没有找到可删除的匹配记忆。"
+        affected = [item.as_dict() for item in deleted]
+    policy = {
+        "path": "p0", "mode": "auto", "reason": f"explicit memory {action} command",
+        "signals": [f"memory:{action}"], "confidence": 1.0,
+        "budget": {
+            "max_model_calls": PATH_BUDGETS["p0"].max_model_calls,
+            "max_input_tokens": PATH_BUDGETS["p0"].max_input_tokens,
+            "max_rounds": 0, "evidence_tokens": 0,
+            "deadline_ms": PATH_BUDGETS["p0"].deadline_ms,
+        },
+    }
+    memory_snapshot = service.ledger.snapshot_id(
+        request_context.tenant_id, request_context.user_id,
+    )
+    return {
+        "run_id": run_id, "route": "chat", "policy": policy, "policy_path": "p0",
+        "route_reason": policy["reason"], "answer": answer, "final_answer": answer,
+        "citations": [], "evidence": [], "packed_evidence": [], "verified": True,
+        "memory_snapshot_id": memory_snapshot, "memory_changes": affected,
+        "request_context": request_context.as_dict(), "snapshots": snapshots,
+        "cache": {"hit": False, "coalesced": False, "source": None},
+        "cost": {
+            "run_id": run_id, "policy_path": "p0", "question_type": f"memory:{action}",
+            "llm_calls": 0, "input_tokens": 0, "output_tokens": 0,
+            "total_tokens": 0, "latency_ms": 0.0, "node_costs": [],
+        },
+    }
 
 
 def _model_id(model: Any) -> str:
@@ -205,6 +306,7 @@ def _answer_cache(
     deadline_ms: int | None,
     target_kb: str | None,
     session_context: str,
+    memory_snapshot_id: str,
 ):
     if (
         not getattr(settings, "enable_persistent_cache", False)
@@ -232,7 +334,7 @@ def _answer_cache(
         question=normalize_query(question),
         kb=kb_name,
         kb_snapshot_id=snapshot_ids[kb_name],
-        memory_snapshot_id="none",
+        memory_snapshot_id=memory_snapshot_id,
         policy_version="adaptive.v2",
         policy_path=predicted_policy.get("path"),
         execution_mode=execution_mode,
@@ -257,6 +359,7 @@ def _singleflight_key(
     deadline_ms: int | None,
     target_kb: str | None,
     session_context: str,
+    memory_snapshot_id: str,
 ) -> str:
     from linki.cache.base import make_cache_key, normalize_query
 
@@ -268,6 +371,7 @@ def _singleflight_key(
         question=normalize_query(question),
         session_context=session_context,
         snapshots=snapshot_ids,
+        memory_snapshot_id=memory_snapshot_id,
         policy_path=predicted_policy.get("path"),
         execution_mode=execution_mode,
         deadline_ms=deadline_ms,
@@ -320,6 +424,9 @@ def _initial_state(
     execution_mode: str,
     deadline_ms: int | None,
     target_kb: str | None,
+    memory_context: str,
+    memory_snapshot_id: str,
+    recalled_memories: list[dict[str, Any]],
 ) -> LinkiGraphState:
     return {
         "question": question,
@@ -327,6 +434,9 @@ def _initial_state(
         "execution_mode": execution_mode,
         "deadline_ms": deadline_ms,
         "target_kb": target_kb,
+        "memory_context": memory_context,
+        "memory_snapshot_id": memory_snapshot_id,
+        "recalled_memories": recalled_memories,
         "model": model,
         "judge": judge,
         "settings": settings,
@@ -441,6 +551,7 @@ def answer_question(
     deadline_ms: int | None = None,
     request_context: Any = None,
     target_kb: str | None = None,
+    thread_id: str = "default",
 ) -> dict[str, Any]:
     """Synchronous compatibility entrypoint; async servers should use the async API."""
     run_id = _run_id(run_id)
@@ -448,6 +559,15 @@ def answer_question(
     judge = judge or model
     execution_mode = execution_mode or getattr(settings, "execution_mode", "auto")
     snapshots = _snapshot_ids(settings)
+    memory_service, recalled_memories, memory_context, memory_snapshot = _recall_memory(
+        settings, request_context, question,
+    )
+    command_result = _handle_memory_command(
+        question, service=memory_service, request_context=request_context,
+        snapshots=snapshots, run_id=run_id,
+    )
+    if command_result is not None:
+        return command_result
     predicted = _predicted_policy(
         question, settings=settings, execution_mode=execution_mode,
         session_context=session_context, deadline_ms=deadline_ms,
@@ -457,18 +577,27 @@ def answer_question(
         request_context=request_context, snapshot_ids=snapshots,
         predicted_policy=predicted, execution_mode=execution_mode,
         deadline_ms=deadline_ms, target_kb=target_kb, session_context=session_context,
+        memory_snapshot_id=memory_snapshot,
     )
     if cache is not None:
         cached = cache.get("answer.v2", cache_key)
         if cached is not None:
-            return _cached_result(
+            result = _cached_result(
                 cached, run_id=run_id, request_context=request_context,
                 snapshot_ids=snapshots, source="answer",
             )
+            _record_memory_episode(
+                memory_service, question=question, result=result,
+                request_context=request_context, settings=settings,
+                run_id=run_id, thread_id=thread_id,
+            )
+            return result
     initial = _initial_state(
         question, model=model, judge=judge, settings=settings, retrieve_fn=retrieve_fn,
         session_context=session_context, execution_mode=execution_mode,
         deadline_ms=deadline_ms, target_kb=target_kb,
+        memory_context=memory_context, memory_snapshot_id=memory_snapshot,
+        recalled_memories=recalled_memories,
     )
     result = _invoke_graph_sync(
         initial, app=app or build_workflow(), settings=settings, run_id=run_id,
@@ -479,6 +608,11 @@ def answer_question(
             "answer.v2", cache_key, _cache_payload(result),
             ttl_seconds=getattr(settings, "answer_cache_ttl_seconds", 86_400),
         )
+    _record_memory_episode(
+        memory_service, question=question, result=result,
+        request_context=request_context, settings=settings,
+        run_id=run_id, thread_id=thread_id,
+    )
     return result
 
 
@@ -496,6 +630,7 @@ async def answer_question_async(
     deadline_ms: int | None = None,
     request_context: Any = None,
     target_kb: str | None = None,
+    thread_id: str = "default",
 ) -> dict[str, Any]:
     """Async primary entrypoint with exact-cache and identical-request single-flight."""
     import asyncio
@@ -508,6 +643,19 @@ async def answer_question_async(
     judge = judge or model
     execution_mode = execution_mode or getattr(settings, "execution_mode", "auto")
     snapshots = _snapshot_ids(settings)
+    memory_service, recalled_memories, memory_context, memory_snapshot = await asyncio.to_thread(
+        _recall_memory, settings, request_context, question,
+    )
+    command_result = await asyncio.to_thread(
+        _handle_memory_command,
+        question,
+        service=memory_service,
+        request_context=request_context,
+        snapshots=snapshots,
+        run_id=run_id,
+    )
+    if command_result is not None:
+        return command_result
     predicted = _predicted_policy(
         question, settings=settings, execution_mode=execution_mode,
         session_context=session_context, deadline_ms=deadline_ms,
@@ -517,24 +665,39 @@ async def answer_question_async(
         request_context=request_context, snapshot_ids=snapshots,
         predicted_policy=predicted, execution_mode=execution_mode,
         deadline_ms=deadline_ms, target_kb=target_kb, session_context=session_context,
+        memory_snapshot_id=memory_snapshot,
     )
     flight_key = _singleflight_key(
         question, model=model, judge=judge, request_context=request_context,
         snapshot_ids=snapshots, predicted_policy=predicted,
         execution_mode=execution_mode, deadline_ms=deadline_ms,
         target_kb=target_kb, session_context=session_context,
+        memory_snapshot_id=memory_snapshot,
     )
     if cache is not None:
         cached = await asyncio.to_thread(cache.get, "answer.v2", cache_key)
         if cached is not None:
-            return _cached_result(
+            result = _cached_result(
                 cached, run_id=run_id, request_context=request_context,
                 snapshot_ids=snapshots, source="answer",
             )
+            await asyncio.to_thread(
+                _record_memory_episode,
+                memory_service,
+                question=question,
+                result=result,
+                request_context=request_context,
+                settings=settings,
+                run_id=run_id,
+                thread_id=thread_id,
+            )
+            return result
     initial = _initial_state(
         question, model=model, judge=judge, settings=settings, retrieve_fn=retrieve_fn,
         session_context=session_context, execution_mode=execution_mode,
         deadline_ms=deadline_ms, target_kb=target_kb,
+        memory_context=memory_context, memory_snapshot_id=memory_snapshot,
+        recalled_memories=recalled_memories,
     )
     workflow = app or build_workflow()
 
@@ -557,4 +720,14 @@ async def answer_question_async(
             cache.set, "answer.v2", cache_key, _cache_payload(result),
             ttl_seconds=getattr(settings, "answer_cache_ttl_seconds", 86_400),
         )
+    await asyncio.to_thread(
+        _record_memory_episode,
+        memory_service,
+        question=question,
+        result=result,
+        request_context=request_context,
+        settings=settings,
+        run_id=run_id,
+        thread_id=thread_id,
+    )
     return result
