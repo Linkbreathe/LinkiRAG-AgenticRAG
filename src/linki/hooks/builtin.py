@@ -149,6 +149,7 @@ def default_hooks(
         "reranker_model": getattr(settings, "reranker_model", "unknown"),
         "candidate_k": getattr(settings, "candidate_k", 30),
         "rerank_k": getattr(settings, "rerank_k", 8),
+        "knowledge_snapshot_id": (snapshot_ids or {}).get("__knowledge__", "none"),
         "retrieval_ttl_seconds": getattr(settings, "retrieval_cache_ttl_seconds", 604_800),
     }
     return HookContext(

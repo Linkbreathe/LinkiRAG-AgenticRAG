@@ -52,6 +52,7 @@ class Settings:
     cache_path: Path = Path(".linki/cache/linki.sqlite3")
     snapshot_manifest_path: Path = Path(".linki/snapshots/manifest.json")
     memory_path: Path = Path(".linki/memory/ledger.sqlite3")
+    knowledge_path: Path = Path(".linki/knowledge/ledger.sqlite3")
     qdrant_url: str | None = None  # set for server/Cloud; local path remains default
     qdrant_api_key_env: str = "QDRANT_API_KEY"
     qdrant_prefer_grpc: bool = False
@@ -147,6 +148,7 @@ class Settings:
             cache_path=anchor(self.cache_path),
             snapshot_manifest_path=anchor(self.snapshot_manifest_path),
             memory_path=anchor(self.memory_path),
+            knowledge_path=anchor(self.knowledge_path),
         )
 
     def kb(self, name: str) -> KnowledgeBase | None:
@@ -222,7 +224,7 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
             kwargs[key] = data[key]
     for key in (
         "data_dir", "qdrant_path", "parent_store_path", "markdown_dir",
-        "cache_path", "snapshot_manifest_path", "memory_path",
+        "cache_path", "snapshot_manifest_path", "memory_path", "knowledge_path",
     ):
         if key in data:
             kwargs[key] = Path(data[key])

@@ -13,7 +13,11 @@ from linki.config import load_settings
 
 app = typer.Typer(add_completion=False, help="Linki — Agentic RAG knowledge assistant.")
 memory_app = typer.Typer(help="Inspect and govern long-term user memory.")
+knowledge_app = typer.Typer(help="Manage sourced claims and projection releases.")
+wiki_app = typer.Typer(help="Browse and review Wiki projections.")
 app.add_typer(memory_app, name="memory")
+app.add_typer(knowledge_app, name="knowledge")
+app.add_typer(wiki_app, name="wiki")
 console = Console()
 
 
@@ -23,6 +27,218 @@ def _memory_runtime(tenant: str, user: str):
 
     settings = load_settings()
     return get_memory_service(settings), RequestContext(tenant, user, ("public",))
+
+
+def _knowledge_runtime():
+    from linki.knowledge.service import get_knowledge_service
+
+    return get_knowledge_service(load_settings())
+
+
+@knowledge_app.command("source-add")
+def knowledge_source_add(
+    path: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    source_key: Optional[str] = typer.Option(None, "--source-key"),
+    uri: Optional[str] = typer.Option(None, "--uri"),
+    scope: str = typer.Option("organization", "--scope"),
+    acl: str = typer.Option("public", "--acl"),
+) -> None:
+    """Register an immutable source artifact without proposing facts."""
+    source_path = Path(path)
+    if not source_path.exists():
+        console.print(f"[red]File not found: {path}[/red]")
+        raise typer.Exit(1)
+    service = _knowledge_runtime()
+    artifact = service.sources.ingest(
+        tenant_id=tenant, source_key=source_key or str(source_path.resolve()),
+        uri=uri or str(source_path.resolve()),
+        content=source_path.read_text(encoding="utf-8"), scope=scope,
+        acl=tuple(item.strip() for item in acl.split(",") if item.strip()),
+    )
+    console.print_json(data=artifact.as_dict())
+
+
+@knowledge_app.command("claim-propose")
+def knowledge_claim_propose(
+    subject: str = typer.Argument(...),
+    predicate: str = typer.Argument(...),
+    value: str = typer.Argument(..., help="Literal value; JSON is decoded when valid."),
+    source_id: str = typer.Option(..., "--source-id"),
+    quote: str = typer.Option(..., "--quote", help="Exact verbatim source quote."),
+    tenant: str = typer.Option("default", "--tenant"),
+    valid_from: Optional[str] = typer.Option(None, "--valid-from"),
+    valid_to: Optional[str] = typer.Option(None, "--valid-to"),
+    qualifiers: str = typer.Option("{}", "--qualifiers", help="JSON qualifiers."),
+) -> None:
+    """Create a candidate claim; it cannot answer queries before approval."""
+    import json
+
+    try:
+        literal = json.loads(value)
+    except json.JSONDecodeError:
+        literal = value
+    try:
+        qualifier_data = json.loads(qualifiers)
+        claim = _knowledge_runtime().propose_claim(
+            tenant_id=tenant, subject=subject, predicate=predicate,
+            literal_value=literal, source_id=source_id, quote=quote,
+            qualifiers=qualifier_data, valid_from=valid_from, valid_to=valid_to,
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=claim.as_dict())
+
+
+@knowledge_app.command("claim-approve")
+def knowledge_claim_approve(
+    claim_id: str = typer.Argument(...),
+    reviewer: str = typer.Option("human", "--reviewer"),
+) -> None:
+    """Activate a candidate only after schema and source-span validation."""
+    try:
+        claim = _knowledge_runtime().claims.activate(claim_id, actor=reviewer)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=claim.as_dict())
+
+
+@knowledge_app.command("claim-reject")
+def knowledge_claim_reject(
+    claim_id: str = typer.Argument(...),
+    reason: str = typer.Option(..., "--reason"),
+) -> None:
+    """Reject a candidate while retaining its audit trail."""
+    try:
+        claim = _knowledge_runtime().claims.reject(claim_id, reason=reason)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=claim.as_dict())
+
+
+@knowledge_app.command("query")
+def knowledge_query(
+    subject: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    predicate: Optional[str] = typer.Option(None, "--predicate"),
+    valid_at: Optional[str] = typer.Option(None, "--at"),
+    recorded_at: Optional[str] = typer.Option(None, "--known-at"),
+    acl: str = typer.Option("public", "--acl"),
+) -> None:
+    """Query claims by valid time and optional system-known time."""
+    from datetime import UTC, datetime
+
+    service = _knowledge_runtime()
+    entity = service.entities.resolve(subject, tenant_id=tenant)
+    claims = service.claims.query_at(
+        tenant_id=tenant, subject_entity_id=entity.entity_id, predicate=predicate,
+        valid_at=valid_at or datetime.now(UTC).isoformat(), recorded_at=recorded_at,
+        acl=tuple(item.strip() for item in acl.split(",") if item.strip()),
+    )
+    console.print_json(data=[claim.as_dict() for claim in claims])
+
+
+@knowledge_app.command("publish")
+def knowledge_publish(
+    tenant: str = typer.Option("default", "--tenant"),
+) -> None:
+    """Build staging Wiki/Graph projections and atomically promote on full integrity."""
+    try:
+        snapshot = _knowledge_runtime().publish(tenant)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=snapshot.__dict__)
+
+
+@knowledge_app.command("rollback")
+def knowledge_rollback(
+    snapshot_id: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+) -> None:
+    """Atomically point projections back to a previously validated snapshot."""
+    try:
+        snapshot = _knowledge_runtime().projections.rollback(tenant, snapshot_id)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=snapshot.__dict__)
+
+
+@knowledge_app.command("graph")
+def knowledge_graph(
+    entity: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    limit: int = typer.Option(20, "--limit", min=1),
+    acl: str = typer.Option("public", "--acl"),
+) -> None:
+    """Inspect an entity's outgoing edges in the active temporal graph."""
+    service = _knowledge_runtime()
+    snapshot = service.projections.active(tenant)
+    if snapshot is None:
+        console.print("[red]No active projection snapshot. Run knowledge publish.[/red]")
+        raise typer.Exit(1)
+    resolved = service.entities.resolve(entity, tenant_id=tenant)
+    rows = service.graph.neighbors(
+        f"entity:{resolved.entity_id}", tenant_id=tenant,
+        snapshot_id=snapshot.snapshot_id,
+        acl=tuple(item.strip() for item in acl.split(",") if item.strip()),
+        limit=limit,
+    )
+    console.print_json(data=rows)
+
+
+@wiki_app.command("list")
+def wiki_list(
+    tenant: str = typer.Option("default", "--tenant"),
+    acl: str = typer.Option("public", "--acl"),
+) -> None:
+    """List non-stale pages in the active projection snapshot."""
+    service = _knowledge_runtime()
+    snapshot = service.projections.active(tenant)
+    pages = service.wiki.list(
+        tenant, snapshot.snapshot_id,
+        tuple(item.strip() for item in acl.split(",") if item.strip()),
+    ) if snapshot else []
+    console.print_json(data=[page.as_dict() for page in pages])
+
+
+@wiki_app.command("show")
+def wiki_show(
+    slug: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    acl: str = typer.Option("public", "--acl"),
+) -> None:
+    """Render a cited Wiki page from the active snapshot."""
+    from rich.markdown import Markdown
+
+    service = _knowledge_runtime()
+    snapshot = service.projections.active(tenant)
+    page = service.wiki.get(
+        tenant, snapshot.snapshot_id, slug,
+        tuple(item.strip() for item in acl.split(",") if item.strip()),
+    ) if snapshot else None
+    if page is None:
+        console.print("[red]Wiki page not found in the active snapshot.[/red]")
+        raise typer.Exit(1)
+    console.print(Markdown(page.markdown))
+
+
+@wiki_app.command("approve")
+def wiki_approve(
+    page_id: str = typer.Argument(...),
+    reviewer: str = typer.Option("human", "--reviewer"),
+) -> None:
+    """Create an approved page version without changing its sourced claims."""
+    try:
+        page = _knowledge_runtime().wiki.approve(page_id, reviewer=reviewer)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=page.as_dict())
 
 
 @memory_app.command("list")
@@ -174,6 +390,8 @@ def _render_result(state: dict, debug: bool) -> None:
 def ingest(
     path: str = typer.Argument(..., help="Path to a .pdf or .md document."),
     kb: str = typer.Option("default", "--kb", help="Target knowledge base name."),
+    tenant: str = typer.Option("default", "--tenant", help="Tenant for source provenance."),
+    acl: str = typer.Option("public", "--acl", help="Comma-separated source ACL scopes."),
 ) -> None:
     """Ingest a document into a knowledge base (chunk -> local Qdrant hybrid index)."""
     from linki.ingestion.indexer import Indexer
@@ -188,9 +406,13 @@ def ingest(
         raise typer.Exit(1)
 
     console.print(f"📄 Ingesting {path} → {kb_obj.collection} …")
-    stats = Indexer(settings).ingest_document(path, kb_obj)
+    stats = Indexer(settings).ingest_document(
+        path, kb_obj, tenant_id=tenant,
+        acl=tuple(item.strip() for item in acl.split(",") if item.strip()),
+    )
     console.print(f"🧩 parents={stats['parents']} / children={stats['children']}")
     console.print(f"🔖 snapshot={stats['snapshot_id']}")
+    console.print(f"📜 source_artifact={stats['source_artifact_id']}")
     console.print(f"📦 indexed into local Qdrant at {settings.qdrant_path}")
 
 

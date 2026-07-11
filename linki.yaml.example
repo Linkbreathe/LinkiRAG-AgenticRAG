@@ -37,6 +37,8 @@ enable_memory: true
 memory_background_formation: true
 memory_token_budget: 300
 episodic_retention_days: 90
+# Source/Claim ledger, Wiki metadata, and temporal graph projection:
+# knowledge_path: .linki/knowledge/ledger.sqlite3
 # qdrant_url: http://localhost:6333  # optional server profile; embedded is default
 # qdrant_api_key_env: QDRANT_API_KEY
 # qdrant_prefer_grpc: true

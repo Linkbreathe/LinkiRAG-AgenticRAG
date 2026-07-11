@@ -156,11 +156,18 @@ def _request_context(value):
     return value or RequestContext()
 
 
-def _snapshot_ids(settings: Any) -> dict[str, str]:
+def _snapshot_ids(settings: Any, tenant_id: str | None = None) -> dict[str, str]:
     from linki.knowledge.snapshots import SnapshotManifest
 
     path = getattr(settings, "snapshot_manifest_path", None)
-    return SnapshotManifest(path).active_ids() if path is not None else {}
+    snapshots = SnapshotManifest(path).active_ids() if path is not None else {}
+    if tenant_id and getattr(settings, "knowledge_path", None):
+        from linki.knowledge.service import get_knowledge_service
+
+        active = get_knowledge_service(settings).projections.active(tenant_id)
+        if active:
+            snapshots["__knowledge__"] = active.snapshot_id
+    return snapshots
 
 
 def _recall_memory(settings: Any, request_context: Any, question: str):
@@ -334,6 +341,7 @@ def _answer_cache(
         question=normalize_query(question),
         kb=kb_name,
         kb_snapshot_id=snapshot_ids[kb_name],
+        knowledge_snapshot_id=snapshot_ids.get("__knowledge__", "none"),
         memory_snapshot_id=memory_snapshot_id,
         policy_version="adaptive.v2",
         policy_path=predicted_policy.get("path"),
@@ -558,7 +566,7 @@ def answer_question(
     request_context = _request_context(request_context)
     judge = judge or model
     execution_mode = execution_mode or getattr(settings, "execution_mode", "auto")
-    snapshots = _snapshot_ids(settings)
+    snapshots = _snapshot_ids(settings, request_context.tenant_id)
     memory_service, recalled_memories, memory_context, memory_snapshot = _recall_memory(
         settings, request_context, question,
     )
@@ -642,7 +650,7 @@ async def answer_question_async(
     request_context = _request_context(request_context)
     judge = judge or model
     execution_mode = execution_mode or getattr(settings, "execution_mode", "auto")
-    snapshots = _snapshot_ids(settings)
+    snapshots = _snapshot_ids(settings, request_context.tenant_id)
     memory_service, recalled_memories, memory_context, memory_snapshot = await asyncio.to_thread(
         _recall_memory, settings, request_context, question,
     )

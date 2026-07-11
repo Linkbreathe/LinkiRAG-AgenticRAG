@@ -64,9 +64,16 @@ class Retriever:
             ))
 
         if self._graph is not None and getattr(self._s, "graph_retrieval", "none") == "ppr_pilot":
+            from linki.hooks.base import current_hooks
+
             seeds = _seed_entities(query)
+            hooks = current_hooks()
+            snapshot_id = (
+                hooks.snapshot_ids.get("__knowledge__", "none")
+                if hooks is not None else "none"
+            )
             graph_hits = self._graph.retrieve(
-                query, seeds, getattr(self._s, "knowledge_snapshot_id", "current"),
+                query, seeds, snapshot_id,
                 getattr(self._s, "candidate_k", 30),
             )
             candidates = reciprocal_rank_fusion([candidates, graph_hits])
@@ -151,7 +158,13 @@ def _seed_entities(query: str) -> list[str]:
 def make_retrieve_fn(settings: Settings, *, variant: str = "rerank_pack"):
     """Return a ``retrieve_fn(query, kb_tool_name) -> list[Evidence]`` bound to a
     single Retriever (embeddings load once)."""
-    retriever = Retriever(settings)
+    graph_retriever = None
+    if getattr(settings, "graph_retrieval", "none") == "ppr_pilot":
+        from linki.knowledge.graph import ContextualLedgerGraphRetriever
+        from linki.knowledge.service import get_knowledge_service
+
+        graph_retriever = ContextualLedgerGraphRetriever(get_knowledge_service(settings))
+    retriever = Retriever(settings, graph_retriever=graph_retriever)
     if variant == "legacy_k5":
         return retriever.retrieve_legacy
     if variant != "rerank_pack":

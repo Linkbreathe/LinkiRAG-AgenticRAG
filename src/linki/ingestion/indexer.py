@@ -191,12 +191,30 @@ class Indexer:
         self.vectors = VectorStoreManager(settings)
         self.parents = ParentStore(settings.parent_store_path)
 
-    def ingest_document(self, path: str | Path, kb: KnowledgeBase) -> dict[str, Any]:
+    def ingest_document(
+        self,
+        path: str | Path,
+        kb: KnowledgeBase,
+        *,
+        tenant_id: str = "default",
+        acl: tuple[str, ...] = ("public",),
+    ) -> dict[str, Any]:
         from linki.ingestion.chunker import DocumentChunker
         from linki.ingestion.loader import load_document
 
         md_text = load_document(path)
         source_name = Path(path).name
+        from linki.knowledge.service import get_knowledge_service
+
+        artifact = get_knowledge_service(self._s).sources.ingest(
+            tenant_id=tenant_id,
+            source_key=f"{kb.name}:{Path(path).resolve()}",
+            uri=str(Path(path).resolve()),
+            content=md_text,
+            scope="organization",
+            acl=acl,
+            parser_version="pymupdf4llm.v1" if Path(path).suffix.lower() == ".pdf" else "markdown.v1",
+        )
         parent_pairs, child_docs = DocumentChunker(self._s).chunk_text(md_text, source_name)
 
         stem = _slug(Path(path).stem)
@@ -234,9 +252,16 @@ class Indexer:
             artifact_digest=file_digest(path),
             index_version=index_version(self._s),
             stats=stats,
-            metadata={"source": source_name, "collection": kb.collection},
+            metadata={
+                "source": source_name, "collection": kb.collection,
+                "source_artifact_id": artifact.source_id,
+            },
         )
-        return {**stats, "snapshot_id": snapshot.snapshot_id}
+        return {
+            **stats,
+            "snapshot_id": snapshot.snapshot_id,
+            "source_artifact_id": artifact.source_id,
+        }
 
     def clear(self, kb: KnowledgeBase) -> None:
         """Drop a knowledge base's vector collection and parent store."""
