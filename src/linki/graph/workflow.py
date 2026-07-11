@@ -21,6 +21,7 @@ from linki.graph.nodes import (
     chat_responder_node,
     clarify_node,
     direct_plan_node,
+    evidence_pack_node,
     final_node,
     final_with_warning_node,
     local_responder_node,
@@ -78,6 +79,7 @@ def build_workflow():
     graph.add_node("direct_plan", direct_plan_node)
     graph.add_node("retrieve", retrieval_node)
     graph.add_node("retrieval_gate", retrieval_gate_node)
+    graph.add_node("evidence_pack", evidence_pack_node)
     graph.add_node("answer", answer_node)
     graph.add_node("answer_risk", answer_risk_node)
     graph.add_node("verifier", verifier_node)
@@ -113,8 +115,9 @@ def build_workflow():
     graph.add_conditional_edges(
         "retrieval_gate",
         retrieval_gate_route,
-        {"answer": "answer", "planner": "planner"},
+        {"answer": "evidence_pack", "planner": "planner"},
     )
+    graph.add_edge("evidence_pack", "answer")
     graph.add_edge("answer", "answer_risk")
     graph.add_conditional_edges(
         "answer_risk",

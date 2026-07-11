@@ -75,6 +75,15 @@ class Settings:
     # —— retrieval & loops ——
     retrieval_k: int = 5
     retrieval_score_threshold: float = 0.0
+    candidate_k: int = 30
+    rerank_k: int = 8
+    enable_local_reranker: bool = True
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    supporting_span_chars: int = 1600
+    evidence_budget_fast: int = 1200
+    evidence_budget_balanced: int = 2400
+    evidence_budget_deep: int = 4000
+    graph_retrieval: str = "none"  # none | ppr_pilot (adapter injected at runtime)
     max_rounds: int = 2  # grader -> refine loop cap (per sub-query)
     max_attempts: int = 2  # verifier -> reflow cap (whole answer)
 
@@ -175,7 +184,10 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
         "max_parent_size", "sparse_vector_name", "dense_model",
         "dense_query_prefix", "dense_passage_prefix", "sparse_model",
         "provider", "llm_model", "judge_provider", "judge_model",
-        "retrieval_k", "retrieval_score_threshold", "max_rounds", "max_attempts",
+        "retrieval_k", "retrieval_score_threshold", "candidate_k", "rerank_k",
+        "enable_local_reranker", "reranker_model", "supporting_span_chars",
+        "evidence_budget_fast", "evidence_budget_balanced", "evidence_budget_deep",
+        "graph_retrieval", "max_rounds", "max_attempts",
         "adaptive_enabled", "execution_mode", "default_deadline_ms",
         "adaptive_low_score_threshold", "adaptive_min_score_margin",
         "enable_cache", "enable_dedup", "enable_hook_trace", "enable_trace",

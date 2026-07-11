@@ -9,6 +9,15 @@
 
 # —— retrieval & agentic loops ——
 retrieval_k: 5
+candidate_k: 30      # high-recall child candidates before reranking
+rerank_k: 8          # parents/spans retained after local cross-encoder
+enable_local_reranker: true
+reranker_model: Xenova/ms-marco-MiniLM-L-6-v2
+supporting_span_chars: 1600
+evidence_budget_fast: 1200
+evidence_budget_balanced: 2400
+evidence_budget_deep: 4000
+graph_retrieval: none  # none | ppr_pilot (requires an injected graph adapter)
 max_rounds: 2        # grader -> refine loop cap (per sub-query)
 max_attempts: 2      # verifier -> reflow cap (whole answer)
 

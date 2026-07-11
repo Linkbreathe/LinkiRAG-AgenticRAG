@@ -51,6 +51,10 @@ def build_citations(answer_text: str, mapping: dict[int, Evidence]) -> list[Cita
                 heading_path=ev.get("heading_path", ""),
                 parent_id=ev.get("parent_id", ""),
                 chunk_id=ev.get("chunk_id", ""),
+                evidence_id=ev.get("evidence_id", ""),
+                quote=ev.get("quote", ev.get("text", "")),
+                char_start=int(ev.get("char_start", 0) or 0),
+                char_end=int(ev.get("char_end", 0) or 0),
             )
         )
     return citations

@@ -131,7 +131,14 @@ def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
 
     for round_no in range(1, max_rounds + 1):
         hits = run_retrieval(retrieve_fn, current_query, target_kb)
-        fresh = [h for h in hits if h.get("chunk_id") not in seen]
+        support_id = str((sub_query or {}).get("id") or "q1")
+        fresh = []
+        for hit in hits:
+            if hit.get("chunk_id") in seen:
+                continue
+            item = dict(hit)
+            item["supports"] = sorted(set(item.get("supports") or []) | {support_id})
+            fresh.append(item)
         seen |= {h.get("chunk_id") for h in fresh if h.get("chunk_id")}
 
         emit_event({

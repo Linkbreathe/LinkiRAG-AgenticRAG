@@ -50,6 +50,9 @@ def test_p1_single_fact_is_one_model_call(tmp_path):
     assert state["policy_path"] == "p1"
     assert state["verified"] is True
     assert state["cost"]["llm_calls"] == 1
+    assert state["evidence_pack_id"]
+    assert state["evidence_pack"]["token_count"] <= 1200
+    assert state["citations"][0]["evidence_id"]
     assert state["cost"]["node_costs"][0]["node"] == "answer"
     assert state["cost"]["node_costs"][0]["usage_source"] == "estimated"
     assert list((tmp_path / "telemetry").glob("*.cost.json"))

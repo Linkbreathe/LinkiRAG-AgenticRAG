@@ -15,13 +15,26 @@ from typing import Annotated, Any, Callable, TypedDict
 
 
 class Evidence(TypedDict, total=False):
+    evidence_id: str
     chunk_id: str
     parent_id: str
     kb: str
     source: str
+    source_id: str
+    source_version: str
     heading_path: str
     text: str
+    quote: str
+    char_start: int
+    char_end: int
     score: float
+    retrieval_score: float
+    rerank_score: float | None
+    rerank_backend: str
+    supports: list[str]
+    token_count: int
+    content_hash: str
+    offset_valid: bool
 
 
 class Citation(TypedDict, total=False):
@@ -30,6 +43,10 @@ class Citation(TypedDict, total=False):
     heading_path: str
     parent_id: str
     chunk_id: str
+    evidence_id: str
+    quote: str
+    char_start: int
+    char_end: int
 
 
 class SubQuery(TypedDict, total=False):
@@ -99,6 +116,9 @@ class LinkiGraphState(TypedDict, total=False):
     # —— retrieval results ——
     target_kb: str
     evidence: Annotated[list[Evidence], _evidence_union]
+    packed_evidence: list[Evidence]
+    evidence_pack: dict[str, Any]
+    evidence_pack_id: str
     retrieval_keys: Annotated[set[str], _set_union]
     gaps: Annotated[list[str], _list_add]
 

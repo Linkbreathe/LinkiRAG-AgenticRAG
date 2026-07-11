@@ -23,6 +23,7 @@ from linki.graph.prompts import (
 from linki.graph.state import LinkiGraphState, SubQuery
 from linki.routing.policy import PATH_BUDGETS, decide_policy, legacy_policy
 from linki.routing.risk import answer_risk, retrieval_risk
+from linki.retrieval.evidence_pack import build_evidence_pack, estimate_tokens
 from linki.tools.registry import render_tool_descriptions
 
 
@@ -333,7 +334,7 @@ def planner_node(state: LinkiGraphState) -> dict[str, Any]:
 def answer_node(state: LinkiGraphState) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    evidence = state.get("evidence") or []
+    evidence = state.get("packed_evidence") or state.get("evidence") or []
     numbered, mapping = number_evidence(evidence)
     gaps = state.get("gaps") or []
     gaps_block = "\n".join(f"- {g}" for g in gaps) if gaps else "（无 / none）"
@@ -419,12 +420,46 @@ def retrieval_gate_route(state: LinkiGraphState) -> str:
     return "answer"
 
 
+def evidence_pack_node(state: LinkiGraphState) -> dict[str, Any]:
+    raw_evidence = state.get("evidence") or []
+    if state.get("policy_path") == "legacy":
+        # Freeze the historical full-parent behavior as a fair ablation slot.
+        policy_budget = max(1, sum(estimate_tokens(item.get("text", "")) for item in raw_evidence))
+    else:
+        policy_budget = ((state.get("policy") or {}).get("budget") or {}).get("evidence_tokens")
+    if policy_budget is None:
+        path = state.get("policy_path", "p2")
+        setting_name = {
+            "p1": "evidence_budget_fast",
+            "p2": "evidence_budget_balanced",
+            "p3": "evidence_budget_deep",
+        }.get(path, "evidence_budget_deep")
+        policy_budget = getattr(state["settings"], setting_name, 4000)
+    pack = build_evidence_pack(
+        raw_evidence,
+        token_budget=int(policy_budget),
+    )
+    payload = pack.as_dict()
+    units = [dict(unit) for unit in pack.units]
+    emit_event({
+        "node": "evidence_pack", "type": "evidence_pack",
+        "evidence_pack_id": pack.evidence_pack_id,
+        "token_budget": pack.token_budget, "token_count": pack.token_count,
+        "units": len(units),
+    })
+    return {
+        "packed_evidence": units,
+        "evidence_pack": payload,
+        "evidence_pack_id": pack.evidence_pack_id,
+    }
+
+
 def answer_risk_node(state: LinkiGraphState) -> dict[str, Any]:
     path = state.get("policy_path", "legacy")
     verdict = answer_risk(
         state.get("answer", ""),
         state.get("citations") or [],
-        state.get("evidence") or [],
+        state.get("packed_evidence") or state.get("evidence") or [],
     )
     if path == "legacy":
         required = True
@@ -466,7 +501,7 @@ def verifier_node(state: LinkiGraphState) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     judge = state.get("judge") or state["model"]
-    evidence = state.get("evidence") or []
+    evidence = state.get("packed_evidence") or state.get("evidence") or []
     numbered, _ = number_evidence(evidence)
 
     raw = _text(
