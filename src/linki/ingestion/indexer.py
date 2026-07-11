@@ -198,18 +198,21 @@ class Indexer:
         *,
         tenant_id: str = "default",
         acl: tuple[str, ...] = ("public",),
+        source_name: str | None = None,
+        source_uri: str | None = None,
     ) -> dict[str, Any]:
         from linki.ingestion.chunker import DocumentChunker
         from linki.ingestion.loader import load_document
 
         md_text = load_document(path)
-        source_name = Path(path).name
+        source_name = source_name or Path(path).name
+        source_uri = source_uri or str(Path(path).resolve())
         from linki.knowledge.service import get_knowledge_service
 
         artifact = get_knowledge_service(self._s).sources.ingest(
             tenant_id=tenant_id,
-            source_key=f"{kb.name}:{Path(path).resolve()}",
-            uri=str(Path(path).resolve()),
+            source_key=f"{kb.name}:{source_uri}",
+            uri=source_uri,
             content=md_text,
             scope="organization",
             acl=acl,
@@ -263,7 +266,17 @@ class Indexer:
             "source_artifact_id": artifact.source_id,
         }
 
-    def clear(self, kb: KnowledgeBase) -> None:
+    def clear(self, kb: KnowledgeBase) -> dict[str, Any]:
         """Drop a knowledge base's vector collection and parent store."""
         self.vectors.delete_collection(kb.collection)
         self.parents.clear(kb.name)
+        from linki.knowledge.snapshots import SnapshotManifest, index_version
+
+        snapshot = SnapshotManifest(self._s.snapshot_manifest_path).promote(
+            kb.name,
+            artifact_digest=f"cleared:{kb.collection}",
+            index_version=index_version(self._s),
+            stats={"parents": 0, "children": 0},
+            metadata={"operation": "clear", "collection": kb.collection},
+        )
+        return {"snapshot_id": snapshot.snapshot_id, "parents": 0, "children": 0}
