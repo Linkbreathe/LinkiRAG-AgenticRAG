@@ -9,6 +9,8 @@ from __future__ import annotations
 from typing import Any
 
 from linki.core.jsonutil import extract_json
+from linki.core.telemetry import current_telemetry, invoke_model
+from linki.core.trace import emit_event
 from linki.graph.evidence import build_citations, number_evidence, render_evidence
 from linki.graph.prompts import (
     ANSWER_PROMPT,
@@ -19,6 +21,8 @@ from linki.graph.prompts import (
     VERIFIER_PROMPT,
 )
 from linki.graph.state import LinkiGraphState, SubQuery
+from linki.routing.policy import PATH_BUDGETS, decide_policy, legacy_policy
+from linki.routing.risk import answer_risk, retrieval_risk
 from linki.tools.registry import render_tool_descriptions
 
 
@@ -31,19 +35,110 @@ def _history_block(state: LinkiGraphState) -> str:
     return state.get("session_context") or "（无 / none）"
 
 
+def _invoke(
+    state: LinkiGraphState,
+    model: Any,
+    messages: Any,
+    *,
+    node: str,
+    version: str,
+    reserve_after: int = 0,
+) -> Any:
+    return invoke_model(
+        model,
+        messages,
+        node=node,
+        prompt_version=version,
+        policy_path=state.get("policy_path", "legacy"),
+        reserve_after=reserve_after,
+    )
+
+
+# ————————————————————————————— local policy router —————————————————————————
+
+def policy_node(state: LinkiGraphState) -> dict[str, Any]:
+    settings = state["settings"]
+    if not getattr(settings, "adaptive_enabled", False):
+        decision = legacy_policy()
+    else:
+        decision = decide_policy(
+            state["question"],
+            mode=state.get("execution_mode") or getattr(settings, "execution_mode", "auto"),
+            session_context=state.get("session_context", ""),
+            kb_count=len(getattr(settings, "knowledge_bases", []) or [None]),
+            deadline_ms=(
+                state.get("deadline_ms")
+                if state.get("deadline_ms") is not None
+                else getattr(settings, "default_deadline_ms", None)
+            ),
+        )
+    payload = decision.as_dict()
+    telemetry = current_telemetry()
+    if telemetry:
+        telemetry.configure(payload)
+    emit_event({
+        "node": "policy", "type": "policy_decision", "policy_path": decision.path,
+        "mode": decision.mode, "reason": decision.reason,
+        "signals": list(decision.signals), "budget": payload["budget"],
+    })
+    return {
+        "policy": payload,
+        "policy_path": decision.path,
+        "route_reason": decision.reason,
+    }
+
+
+def policy_route(state: LinkiGraphState) -> str:
+    path = state.get("policy_path", "legacy")
+    if path == "p0":
+        return "p0_local" if (state.get("policy") or {}).get("local_response") else "p0_model"
+    if path == "p3" and (state.get("policy") or {}).get("needs_rewrite"):
+        return "p3_rewrite"
+    return path
+
+
+def local_responder_node(state: LinkiGraphState) -> dict[str, Any]:
+    response = (state.get("policy") or {}).get("local_response") or "How can I help?"
+    return {
+        "route": "chat",
+        "chat_response": response,
+        "final_answer": response,
+        "verified": True,
+        "citations": [],
+    }
+
+
+def direct_plan_node(state: LinkiGraphState) -> dict[str, Any]:
+    """P1's zero-model planner: one intent, one selected knowledge base."""
+    return {
+        "sub_queries": [
+            SubQuery(
+                id="q1",
+                query=state.get("rewritten_query") or state["question"],
+                target_kb=_preferred_tool(state),
+                reason="P1 direct retrieval",
+            )
+        ]
+    }
+
+
 # ————————————————————————————————— router —————————————————————————————————
 
 def router_node(state: LinkiGraphState) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     raw = _text(
-        state["model"].invoke(
+        _invoke(
+            state,
+            state["model"],
             [
                 SystemMessage(content=ROUTER_PROMPT),
                 HumanMessage(
                     content=f"History:\n{_history_block(state)}\n\nLatest input: {state['question']}"
                 ),
-            ]
+            ],
+            node="router",
+            version="router.v2",
         )
     )
     decision = extract_json(raw, fallback={"route": "retrieve"})
@@ -67,11 +162,15 @@ def chat_responder_node(state: LinkiGraphState) -> dict[str, Any]:
     from langchain_core.messages import HumanMessage, SystemMessage
 
     reply = _text(
-        state["model"].invoke(
+        _invoke(
+            state,
+            state["model"],
             [
                 SystemMessage(content=CHAT_PROMPT),
                 HumanMessage(content=state["question"]),
-            ]
+            ],
+            node="chat_responder",
+            version="chat.v1",
         )
     )
     return {"chat_response": reply, "final_answer": reply}
@@ -96,13 +195,18 @@ def rewrite_node(state: LinkiGraphState) -> dict[str, Any]:
         return {"rewritten_query": state["question"]}
 
     rewritten = _text(
-        state["model"].invoke(
+        _invoke(
+            state,
+            state["model"],
             [
                 SystemMessage(content=REWRITE_PROMPT),
                 HumanMessage(
                     content=f"History:\n{_history_block(state)}\n\nLatest question: {state['question']}"
                 ),
-            ]
+            ],
+            node="rewrite",
+            version="rewrite.v1",
+            reserve_after=3 if state.get("policy_path") == "p3" else 0,
         )
     ).strip()
     return {"rewritten_query": rewritten or state["question"]}
@@ -191,8 +295,12 @@ def planner_node(state: LinkiGraphState) -> dict[str, Any]:
         for i in issues
         if isinstance(i, dict)
     ) or "(none)"
+    path = state.get("policy_path", "legacy")
+    reserve = 2 if path == "p3" else (1 if path == "p2" else 0)
     raw = _text(
-        state["model"].invoke(
+        _invoke(
+            state,
+            state["model"],
             [
                 SystemMessage(content=PLANNER_PROMPT),
                 HumanMessage(
@@ -204,14 +312,20 @@ def planner_node(state: LinkiGraphState) -> dict[str, Any]:
                         f"Verifier issues:\n{issues_block}"
                     )
                 ),
-            ]
+            ],
+            node="planner",
+            version="planner.v2",
+            reserve_after=reserve,
         )
     )
     plan = extract_json(raw, fallback={"sub_queries": _fallback_plan(state)})
     sub_queries = _normalize_sub_queries(state, plan.get("sub_queries"))
     if not sub_queries:
         sub_queries = _fallback_plan(state, "planner returned no valid sub-queries")
-    return {"sub_queries": sub_queries}
+    out: dict[str, Any] = {"sub_queries": sub_queries}
+    if state.get("policy_escalated"):
+        out["policy_replanned"] = True
+    return out
 
 
 # ————————————————————————————————— answer ——————————————————————————————————
@@ -225,7 +339,9 @@ def answer_node(state: LinkiGraphState) -> dict[str, Any]:
     gaps_block = "\n".join(f"- {g}" for g in gaps) if gaps else "（无 / none）"
 
     reply = _text(
-        state["model"].invoke(
+        _invoke(
+            state,
+            state["model"],
             [
                 SystemMessage(content=ANSWER_PROMPT),
                 HumanMessage(
@@ -235,10 +351,113 @@ def answer_node(state: LinkiGraphState) -> dict[str, Any]:
                         f"<gaps>\n{gaps_block}\n</gaps>"
                     )
                 ),
-            ]
+            ],
+            node="answer",
+            version="answer.v2",
+            reserve_after=1 if state.get("policy_path") == "p3" else 0,
         )
     )
     return {"answer": reply, "citations": build_citations(reply, mapping)}
+
+
+# ————————————————————————— deterministic risk gates ———————————————————————
+
+def retrieval_gate_node(state: LinkiGraphState) -> dict[str, Any]:
+    verdict = retrieval_risk(
+        state.get("evidence") or [],
+        state.get("gaps") or [],
+        state["settings"],
+    )
+    path = state.get("policy_path", "legacy")
+    out: dict[str, Any] = {"retrieval_risk": verdict.as_dict()}
+    # A low-confidence short path may only upgrade.  It can never silently
+    # generate under the original P1/P2 confidence assumption.
+    if path in {"p1", "p2"} and verdict.risky and not state.get("policy_escalated"):
+        policy = dict(state.get("policy") or {})
+        old_budget = policy.get("budget") or {}
+        policy.update({
+            "path": "p3",
+            "reason": f"upgraded after retrieval risk: {', '.join(verdict.reasons)}",
+            "signals": list(policy.get("signals") or []) + list(verdict.reasons),
+            "budget": {
+                "max_model_calls": PATH_BUDGETS["p3"].max_model_calls,
+                "max_input_tokens": PATH_BUDGETS["p3"].max_input_tokens,
+                "max_rounds": PATH_BUDGETS["p3"].max_rounds,
+                "evidence_tokens": PATH_BUDGETS["p3"].evidence_tokens,
+                "deadline_ms": min(
+                    int(old_budget.get("deadline_ms", PATH_BUDGETS["p3"].deadline_ms)),
+                    PATH_BUDGETS["p3"].deadline_ms,
+                ),
+            },
+        })
+        telemetry = current_telemetry()
+        if telemetry:
+            telemetry.configure(policy)
+        emit_event({
+            "node": "risk_gate", "type": "policy_upgrade",
+            "from": path, "to": "p3", "reasons": list(verdict.reasons),
+        })
+        out.update({
+            "policy": policy,
+            "policy_path": "p3",
+            "policy_escalated": True,
+        })
+    return out
+
+
+def retrieval_gate_route(state: LinkiGraphState) -> str:
+    if (
+        state.get("policy_escalated")
+        and not state.get("policy_replanned")
+        and state.get("policy_path") == "p3"
+    ):
+        # The first gate after an upgrade replans once. Later P3 retrievals
+        # continue to answer even when the gap remains, so there is no loop.
+        risk = state.get("retrieval_risk") or {}
+        if risk.get("risky") and not state.get("answer"):
+            return "planner"
+    return "answer"
+
+
+def answer_risk_node(state: LinkiGraphState) -> dict[str, Any]:
+    path = state.get("policy_path", "legacy")
+    verdict = answer_risk(
+        state.get("answer", ""),
+        state.get("citations") or [],
+        state.get("evidence") or [],
+    )
+    if path == "legacy":
+        required = True
+    elif path == "p3":
+        required = True
+    elif path == "p2":
+        required = verdict.risky
+    else:
+        required = False
+    emit_event({
+        "node": "risk_gate", "type": "answer_risk",
+        "policy_path": path, "risky": verdict.risky,
+        "reasons": list(verdict.reasons), "verify_required": required,
+    })
+    return {
+        "answer_risk": verdict.as_dict(),
+        "verify_required": required,
+        # A deterministic pass is a valid P0/P1/P2 terminal check. P3 and
+        # legacy paths overwrite this with the judge verdict.
+        "verified": not verdict.risky and not required,
+        "verify_issues": [
+            {"claim": "deterministic answer validation", "problem": reason}
+            for reason in verdict.reasons
+        ],
+    }
+
+
+def answer_risk_route(state: LinkiGraphState) -> str:
+    if state.get("verify_required"):
+        return "verifier"
+    if (state.get("answer_risk") or {}).get("risky"):
+        return "final_with_warning"
+    return "final"
 
 
 # ———————————————————————————————— verifier ——————————————————————————————————
@@ -251,7 +470,9 @@ def verifier_node(state: LinkiGraphState) -> dict[str, Any]:
     numbered, _ = number_evidence(evidence)
 
     raw = _text(
-        judge.invoke(
+        _invoke(
+            state,
+            judge,
             [
                 SystemMessage(content=VERIFIER_PROMPT),
                 HumanMessage(
@@ -261,7 +482,9 @@ def verifier_node(state: LinkiGraphState) -> dict[str, Any]:
                         f"<evidence>\n{render_evidence(numbered)}\n</evidence>"
                     )
                 ),
-            ]
+            ],
+            node="verifier",
+            version="verifier.v2",
         )
     )
     fallback_issue = {
@@ -295,6 +518,20 @@ def verifier_route(state: LinkiGraphState) -> str:
     settings = state["settings"]
     if state.get("attempts", 0) >= getattr(settings, "max_attempts", 2):
         return "final_with_warning"
+    path = state.get("policy_path", "legacy")
+    if path in {"p1", "p2"}:
+        return "final_with_warning"
+    if path == "p3":
+        # Reflow only for a concrete support defect and only when the remaining
+        # budget can still pay for plan + answer + verification.
+        support_problem = any(
+            any(word in str(issue.get("problem", "")).lower() for word in ("support", "missing", "coverage"))
+            for issue in (state.get("verify_issues") or [])
+            if isinstance(issue, dict)
+        )
+        remaining = current_telemetry().remaining_calls() if current_telemetry() else None
+        if not support_problem or (remaining is not None and remaining < 3):
+            return "final_with_warning"
     return "planner"  # reflow: plan supplemental retrieval from verifier issues
 
 

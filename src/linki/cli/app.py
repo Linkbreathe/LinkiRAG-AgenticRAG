@@ -30,6 +30,11 @@ def _build_runtime(debug: bool = False, settings=None):
 
 def _render_result(state: dict, debug: bool) -> None:
     if debug:
+        policy = state.get("policy") or {}
+        console.print(
+            f"[dim][policy][/dim] {state.get('policy_path') or policy.get('path')} — "
+            f"{policy.get('reason', state.get('route_reason', ''))}"
+        )
         console.print(f"[dim][router][/dim] {state.get('route')} — {state.get('route_reason', '')}")
         if state.get("rewritten_query"):
             console.print(f"[dim][rewrite][/dim] {state['rewritten_query']}")
@@ -37,6 +42,12 @@ def _render_result(state: dict, debug: bool) -> None:
                       f"verified={state.get('verified')}")
         for issue in state.get("verify_issues") or []:
             console.print(f"[yellow][verify-issue][/yellow] {issue}")
+        cost = state.get("cost") or {}
+        if cost:
+            console.print(
+                f"[dim][cost][/dim] calls={cost.get('llm_calls', 0)} "
+                f"tokens={cost.get('total_tokens', 0)} latency_ms={cost.get('latency_ms', 0)}"
+            )
 
     console.print(Panel(state.get("final_answer") or state.get("answer") or "(no answer)", title="Linki"))
 
@@ -77,6 +88,8 @@ def ingest(
 def ask(
     question: str = typer.Argument(..., help="Your question."),
     debug: bool = typer.Option(False, "--debug", help="Print routing/retrieval decisions."),
+    mode: str = typer.Option("auto", "--mode", help="Execution mode: auto|fast|balanced|deep."),
+    deadline_ms: Optional[int] = typer.Option(None, "--deadline-ms", min=1, help="Request deadline in milliseconds."),
 ) -> None:
     """Answer a single question through the full Agentic RAG graph."""
     from linki.graph.workflow import answer_question
@@ -87,9 +100,14 @@ def ask(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
-    state = answer_question(
-        question, model=model, judge=judge, settings=settings, retrieve_fn=retrieve_fn
-    )
+    try:
+        state = answer_question(
+            question, model=model, judge=judge, settings=settings, retrieve_fn=retrieve_fn,
+            execution_mode=mode, deadline_ms=deadline_ms,
+        )
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(2)
     _render_result(state, debug)
 
 

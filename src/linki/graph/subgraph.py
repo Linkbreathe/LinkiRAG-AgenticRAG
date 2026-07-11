@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from linki.core.jsonutil import extract_json
+from linki.core.telemetry import ModelBudgetExceeded, invoke_model
 from linki.core.trace import emit_event
 from linki.graph.prompts import GRADER_PROMPT
 from linki.graph.state import Evidence, LinkiGraphState
@@ -37,7 +38,13 @@ def _render_hits(hits: list[Evidence]) -> str:
     )
 
 
-def grade(judge: Any, query: str, hits: list[Evidence]) -> dict[str, Any]:
+def grade(
+    judge: Any,
+    query: str,
+    hits: list[Evidence],
+    *,
+    policy_path: str = "legacy",
+) -> dict[str, Any]:
     """Structured retrieval-quality verdict for a sub-query against fresh hits."""
     if not hits:
         return {
@@ -48,12 +55,29 @@ def grade(judge: Any, query: str, hits: list[Evidence]) -> dict[str, Any]:
         }
     from langchain_core.messages import HumanMessage, SystemMessage
 
-    raw = judge.invoke(
-        [
-            SystemMessage(content=GRADER_PROMPT),
-            HumanMessage(content=f"Sub-query: {query}\n\nEvidence:\n{_render_hits(hits)}"),
-        ]
-    ).content
+    messages = [
+        SystemMessage(content=GRADER_PROMPT),
+        HumanMessage(content=f"Sub-query: {query}\n\nEvidence:\n{_render_hits(hits)}"),
+    ]
+    try:
+        response = invoke_model(
+            judge,
+            messages,
+            node="grader",
+            prompt_version="grader.v2",
+            policy_path=policy_path,
+            # Always leave capacity for answer + verifier on P3.
+            reserve_after=2 if policy_path == "p3" else 0,
+        )
+        raw = getattr(response, "content", response)
+    except ModelBudgetExceeded:
+        return {
+            "sufficient": bool(hits),
+            "relevant_chunk_ids": [h.get("chunk_id") for h in hits],
+            "missing": "generative grader skipped to preserve answer/verification budget",
+            "refined_query": query,
+            "budget_limited": True,
+        }
     # A malformed judge response is not evidence of sufficiency. Keep the hits
     # available to generation, but mark the grade as failed so the answer path
     # must disclose the gap instead of silently treating ungraded evidence as
@@ -81,7 +105,12 @@ def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
     settings = state["settings"]
     retrieve_fn = state["retrieve_fn"]
     judge = state.get("judge") or state["model"]
-    max_rounds = getattr(settings, "max_rounds", 2)
+    path = state.get("policy_path", "legacy")
+    policy_rounds = ((state.get("policy") or {}).get("budget") or {}).get("max_rounds")
+    max_rounds = min(
+        getattr(settings, "max_rounds", 2),
+        int(policy_rounds) if policy_rounds is not None else getattr(settings, "max_rounds", 2),
+    )
 
     sub_query = state.get("sub_query")
     sub_queries = state.get("sub_queries") or []
@@ -115,7 +144,16 @@ def retrieval_node(state: LinkiGraphState) -> dict[str, Any]:
             ],
         })
 
-        verdict = grade(judge, base_query, fresh)
+        if path in {"p1", "p2"}:
+            verdict = {
+                "sufficient": bool(fresh),
+                "relevant_chunk_ids": [h.get("chunk_id") for h in fresh],
+                "missing": "" if fresh else "no evidence retrieved",
+                "refined_query": current_query,
+                "grader": "deterministic",
+            }
+        else:
+            verdict = grade(judge, base_query, fresh, policy_path=path)
         relevant_ids = set(verdict.get("relevant_chunk_ids") or [])
         keep = [h for h in fresh if not relevant_ids or h.get("chunk_id") in relevant_ids]
         collected.extend(keep)

@@ -78,6 +78,15 @@ class Settings:
     max_rounds: int = 2  # grader -> refine loop cap (per sub-query)
     max_attempts: int = 2  # verifier -> reflow cap (whole answer)
 
+    # —— adaptive execution (Stages 7-8) ——
+    adaptive_enabled: bool = True
+    execution_mode: str = "auto"  # auto | fast | balanced | deep
+    default_deadline_ms: int | None = None
+    # Risk score thresholds stay disabled until calibrated on this project's
+    # corpus. Setting either above zero opts into that calibrated gate.
+    adaptive_low_score_threshold: float = 0.0
+    adaptive_min_score_margin: float = 0.0
+
     # —— observability / hooks (Phase 6) ——
     enable_cache: bool = True  # Pre: memoize identical (query, kb) fetches
     enable_dedup: bool = True  # Post: drop parents already collected this run
@@ -167,6 +176,8 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
         "dense_query_prefix", "dense_passage_prefix", "sparse_model",
         "provider", "llm_model", "judge_provider", "judge_model",
         "retrieval_k", "retrieval_score_threshold", "max_rounds", "max_attempts",
+        "adaptive_enabled", "execution_mode", "default_deadline_ms",
+        "adaptive_low_score_threshold", "adaptive_min_score_margin",
         "enable_cache", "enable_dedup", "enable_hook_trace", "enable_trace",
     ):
         if key in data:
