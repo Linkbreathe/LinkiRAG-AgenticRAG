@@ -53,6 +53,7 @@ class Settings:
     snapshot_manifest_path: Path = Path(".linki/snapshots/manifest.json")
     memory_path: Path = Path(".linki/memory/ledger.sqlite3")
     knowledge_path: Path = Path(".linki/knowledge/ledger.sqlite3")
+    evolution_path: Path = Path(".linki/evolution/ledger.sqlite3")
     qdrant_url: str | None = None  # set for server/Cloud; local path remains default
     qdrant_api_key_env: str = "QDRANT_API_KEY"
     qdrant_prefer_grpc: bool = False
@@ -121,6 +122,10 @@ class Settings:
     memory_token_budget: int = 300
     episodic_retention_days: int = 90
 
+    # —— controlled evolution (Stage 13) ——
+    enable_feedback_ledger: bool = True
+    gap_min_frequency: int = 2
+
     # —— knowledge bases ——
     knowledge_bases: list[KnowledgeBase] = field(
         default_factory=lambda: [
@@ -149,6 +154,7 @@ class Settings:
             snapshot_manifest_path=anchor(self.snapshot_manifest_path),
             memory_path=anchor(self.memory_path),
             knowledge_path=anchor(self.knowledge_path),
+            evolution_path=anchor(self.evolution_path),
         )
 
     def kb(self, name: str) -> KnowledgeBase | None:
@@ -219,12 +225,14 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
         "answer_cache_ttl_seconds", "retrieval_cache_ttl_seconds",
         "enable_memory", "memory_background_formation", "memory_token_budget",
         "episodic_retention_days",
+        "enable_feedback_ledger", "gap_min_frequency",
     ):
         if key in data:
             kwargs[key] = data[key]
     for key in (
         "data_dir", "qdrant_path", "parent_store_path", "markdown_dir",
         "cache_path", "snapshot_manifest_path", "memory_path", "knowledge_path",
+        "evolution_path",
     ):
         if key in data:
             kwargs[key] = Path(data[key])

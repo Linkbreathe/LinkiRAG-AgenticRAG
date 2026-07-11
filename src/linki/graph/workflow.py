@@ -141,6 +141,7 @@ _ANSWER_CACHE_FIELDS = (
     "evidence_pack_id", "verified", "verification_error", "verify_issues",
     "retrieval_risk", "answer_risk", "gaps", "attempts",
     "memory_snapshot_id", "recalled_memories",
+    "versions",
 )
 
 
@@ -212,6 +213,80 @@ def _record_memory_episode(
         run_id=run_id,
         background=getattr(settings, "memory_background_formation", True),
     )
+
+
+def _version_manifest(
+    result: dict[str, Any],
+    *,
+    settings: Any,
+    model: Any,
+    judge: Any,
+    snapshots: dict[str, str],
+    memory_snapshot_id: str,
+) -> dict[str, Any]:
+    return {
+        "policy": "adaptive.v2",
+        "prompts": {
+            "router": "router.v2", "planner": "planner.v2", "grader": "grader.v2",
+            "answer": "answer.v2", "verifier": "verifier.v2",
+        },
+        "model": _model_id(model),
+        "judge_model": _model_id(judge),
+        "dense_model": getattr(settings, "dense_model", "unknown"),
+        "sparse_model": getattr(settings, "sparse_model", "unknown"),
+        "reranker": getattr(settings, "reranker_model", "unknown"),
+        "index_snapshots": dict(snapshots),
+        "memory_snapshot": memory_snapshot_id,
+        "evidence_pack": result.get("evidence_pack_id"),
+    }
+
+
+def _record_evolution_observations(
+    settings: Any,
+    *,
+    question: str,
+    result: dict[str, Any],
+    request_context: Any,
+) -> None:
+    if not getattr(settings, "enable_feedback_ledger", False) or not getattr(settings, "evolution_path", None):
+        return
+    import json
+    import re
+
+    from linki.cache.base import normalize_query
+    from linki.evolution.service import get_evolution_service
+
+    service = get_evolution_service(settings)
+    evidence = result.get("packed_evidence") or result.get("evidence") or []
+    gaps = result.get("gaps") or []
+    entities = re.findall(r"\b[A-Z][\w.-]{2,}\b|[\u4e00-\u9fff]{2,8}", question or "")
+    common = {
+        "question": question,
+        "normalized_query": normalize_query(question),
+        "entities": entities,
+        "target_kb": result.get("target_kb") or "default",
+        "retrieved_source_ids": [item.get("source_id") or item.get("source") for item in evidence],
+        "nearest_sources": [item.get("source") for item in evidence[:5] if item.get("source")],
+        "policy_path": result.get("policy_path"),
+    }
+    run_id = result.get("run_id")
+    if not evidence or gaps:
+        service.feedback.record(
+            tenant_id=request_context.tenant_id, user_id=request_context.user_id,
+            kind="not_found", run_id=run_id, source="runtime",
+            acl=request_context.acl,
+            payload={**common, "missing_support": "; ".join(str(gap) for gap in gaps) or "no evidence"},
+            idempotency_key=f"{run_id}:not-found",
+        )
+    issues = result.get("verify_issues") or []
+    if issues and not result.get("verified"):
+        service.feedback.record(
+            tenant_id=request_context.tenant_id, user_id=request_context.user_id,
+            kind="verifier_issue", run_id=run_id, source="runtime",
+            acl=request_context.acl,
+            payload={**common, "missing_support": json.dumps(issues, ensure_ascii=False)},
+            idempotency_key=f"{run_id}:verifier",
+        )
 
 
 def _handle_memory_command(
@@ -480,6 +555,15 @@ def _finalize_result(result, *, run_id, request_context, snapshot_ids, telemetry
     result["request_context"] = request_context.as_dict()
     result["snapshots"] = snapshot_ids
     result["cache"] = {"hit": False, "coalesced": False, "source": None}
+    settings = result.get("settings")
+    result["versions"] = _version_manifest(
+        result,
+        settings=settings,
+        model=result.get("model"),
+        judge=result.get("judge") or result.get("model"),
+        snapshots=snapshot_ids,
+        memory_snapshot_id=result.get("memory_snapshot_id", "none"),
+    )
     result["cost"] = telemetry.snapshot()
     emit_event({
         "node": "run", "type": "run_cost", "policy_path": result.get("policy_path"),
@@ -575,6 +659,11 @@ def answer_question(
         snapshots=snapshots, run_id=run_id,
     )
     if command_result is not None:
+        command_result["versions"] = _version_manifest(
+            command_result, settings=settings, model=model, judge=judge,
+            snapshots=snapshots,
+            memory_snapshot_id=command_result.get("memory_snapshot_id", memory_snapshot),
+        )
         return command_result
     predicted = _predicted_policy(
         question, settings=settings, execution_mode=execution_mode,
@@ -593,6 +682,13 @@ def answer_question(
             result = _cached_result(
                 cached, run_id=run_id, request_context=request_context,
                 snapshot_ids=snapshots, source="answer",
+            )
+            result.setdefault("versions", _version_manifest(
+                result, settings=settings, model=model, judge=judge,
+                snapshots=snapshots, memory_snapshot_id=memory_snapshot,
+            ))
+            _record_evolution_observations(
+                settings, question=question, result=result, request_context=request_context,
             )
             _record_memory_episode(
                 memory_service, question=question, result=result,
@@ -616,6 +712,9 @@ def answer_question(
             "answer.v2", cache_key, _cache_payload(result),
             ttl_seconds=getattr(settings, "answer_cache_ttl_seconds", 86_400),
         )
+    _record_evolution_observations(
+        settings, question=question, result=result, request_context=request_context,
+    )
     _record_memory_episode(
         memory_service, question=question, result=result,
         request_context=request_context, settings=settings,
@@ -663,6 +762,11 @@ async def answer_question_async(
         run_id=run_id,
     )
     if command_result is not None:
+        command_result["versions"] = _version_manifest(
+            command_result, settings=settings, model=model, judge=judge,
+            snapshots=snapshots,
+            memory_snapshot_id=command_result.get("memory_snapshot_id", memory_snapshot),
+        )
         return command_result
     predicted = _predicted_policy(
         question, settings=settings, execution_mode=execution_mode,
@@ -688,6 +792,17 @@ async def answer_question_async(
             result = _cached_result(
                 cached, run_id=run_id, request_context=request_context,
                 snapshot_ids=snapshots, source="answer",
+            )
+            result.setdefault("versions", _version_manifest(
+                result, settings=settings, model=model, judge=judge,
+                snapshots=snapshots, memory_snapshot_id=memory_snapshot,
+            ))
+            await asyncio.to_thread(
+                _record_evolution_observations,
+                settings,
+                question=question,
+                result=result,
+                request_context=request_context,
             )
             await asyncio.to_thread(
                 _record_memory_episode,
@@ -728,6 +843,13 @@ async def answer_question_async(
             cache.set, "answer.v2", cache_key, _cache_payload(result),
             ttl_seconds=getattr(settings, "answer_cache_ttl_seconds", 86_400),
         )
+    await asyncio.to_thread(
+        _record_evolution_observations,
+        settings,
+        question=question,
+        result=result,
+        request_context=request_context,
+    )
     await asyncio.to_thread(
         _record_memory_episode,
         memory_service,

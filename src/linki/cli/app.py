@@ -15,9 +15,11 @@ app = typer.Typer(add_completion=False, help="Linki — Agentic RAG knowledge as
 memory_app = typer.Typer(help="Inspect and govern long-term user memory.")
 knowledge_app = typer.Typer(help="Manage sourced claims and projection releases.")
 wiki_app = typer.Typer(help="Browse and review Wiki projections.")
+evolve_app = typer.Typer(help="Inspect gaps and run gated candidate releases.")
 app.add_typer(memory_app, name="memory")
 app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(wiki_app, name="wiki")
+app.add_typer(evolve_app, name="evolve")
 console = Console()
 
 
@@ -33,6 +35,178 @@ def _knowledge_runtime():
     from linki.knowledge.service import get_knowledge_service
 
     return get_knowledge_service(load_settings())
+
+
+def _evolution_runtime():
+    from linki.evolution.service import get_evolution_service
+
+    return get_evolution_service(load_settings())
+
+
+@evolve_app.command("feedback")
+def evolve_feedback(
+    kind: str = typer.Argument(...),
+    payload: str = typer.Option(..., "--payload", help="JSON signal payload."),
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+    run_id: Optional[str] = typer.Option(None, "--run-id"),
+    acl: str = typer.Option("public", "--acl"),
+) -> None:
+    """Append a feedback observation; it never mutates active knowledge."""
+    import json
+
+    try:
+        data = json.loads(payload)
+        item = _evolution_runtime().feedback.record(
+            tenant_id=tenant, user_id=user, kind=kind, payload=data,
+            run_id=run_id, source="cli",
+            acl=tuple(item.strip() for item in acl.split(",") if item.strip()),
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=item.as_dict())
+
+
+@evolve_app.command("gaps")
+def evolve_gaps(
+    tenant: str = typer.Option("default", "--tenant"),
+    mine: bool = typer.Option(True, "--mine/--no-mine"),
+    min_frequency: Optional[int] = typer.Option(None, "--min-frequency", min=1),
+    status: Optional[str] = typer.Option(None, "--status"),
+) -> None:
+    """Mine or list knowledge-gap backlog items; no answer text is generated."""
+    settings = load_settings()
+    service = _evolution_runtime()
+    if mine:
+        service.gaps.mine(
+            tenant, min_frequency=min_frequency or settings.gap_min_frequency,
+        )
+    console.print_json(data=[gap.as_dict() for gap in service.gaps.list_current(tenant, status)])
+
+
+@evolve_app.command("gap-status")
+def evolve_gap_status(
+    gap_id: str = typer.Argument(...),
+    status: str = typer.Argument(..., help="open|documented|wont_fix"),
+) -> None:
+    """Version a backlog status change."""
+    try:
+        gap = _evolution_runtime().gaps.set_status(gap_id, status)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=gap.as_dict())
+
+
+@evolve_app.command("release-register")
+def evolve_release_register(
+    artifact_type: str = typer.Argument(...),
+    artifact_version: str = typer.Argument(...),
+    artifact: str = typer.Option(..., "--artifact", help="Candidate artifact JSON."),
+    train_hash: str = typer.Option(..., "--train-hash"),
+    dev_hash: str = typer.Option(..., "--dev-hash"),
+    test_hash: str = typer.Option(..., "--test-hash"),
+    change_card: str = typer.Option(..., "--change-card", help="Model-card-style JSON."),
+    tenant: str = typer.Option("default", "--tenant"),
+) -> None:
+    """Register an offline candidate; registration cannot change production."""
+    import json
+
+    try:
+        item = _evolution_runtime().releases.register_candidate(
+            tenant_id=tenant, artifact_type=artifact_type,
+            artifact_version=artifact_version, artifact=json.loads(artifact),
+            train_hash=train_hash, dev_hash=dev_hash, test_hash=test_hash,
+            change_card=json.loads(change_card),
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=item.as_dict())
+
+
+@evolve_app.command("release-evaluate")
+def evolve_release_evaluate(
+    release_id: str = typer.Argument(...),
+    stage: str = typer.Argument(..., help="offline_dev|test|shadow|canary"),
+    dataset_hash: str = typer.Option(..., "--dataset-hash"),
+    metrics: str = typer.Option(..., "--metrics", help="Five-category metrics JSON."),
+    criteria: str = typer.Option(..., "--criteria", help="ReleaseCriteria JSON."),
+) -> None:
+    """Apply constraint gates to one immutable evaluation result."""
+    import json
+
+    from linki.evolution.release import ReleaseCriteria
+
+    try:
+        item = _evolution_runtime().releases.evaluate(
+            release_id, stage=stage, dataset_hash=dataset_hash,
+            metrics=json.loads(metrics), criteria=ReleaseCriteria(**json.loads(criteria)),
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=item.as_dict())
+
+
+@evolve_app.command("canary-start")
+def evolve_canary_start(release_id: str = typer.Argument(...)) -> None:
+    """Move a shadow-passed release into stable-bucket canary state."""
+    try:
+        item = _evolution_runtime().releases.start_canary(release_id)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=item.as_dict())
+
+
+@evolve_app.command("canary-check")
+def evolve_canary_check(
+    release_id: str = typer.Argument(...),
+    tenant: str = typer.Option("default", "--tenant"),
+    user: str = typer.Option("anonymous", "--user"),
+    percentage: float = typer.Option(5.0, "--percentage", min=0, max=100),
+) -> None:
+    """Show the deterministic assignment for one tenant/user."""
+    from linki.evolution.release import ReleaseManager
+
+    console.print_json(data={
+        "release_id": release_id,
+        "candidate": ReleaseManager.in_canary(
+            release_id, tenant, user, percentage=percentage,
+        ),
+    })
+
+
+@evolve_app.command("promote")
+def evolve_promote(
+    release_id: str = typer.Argument(...),
+    human_approved: bool = typer.Option(False, "--human-approved"),
+) -> None:
+    """Promote only a canary-passed candidate; sensitive artifacts need approval."""
+    try:
+        item = _evolution_runtime().releases.promote(
+            release_id, human_approved=human_approved,
+        )
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=item.as_dict())
+
+
+@evolve_app.command("rollback")
+def evolve_rollback(
+    release_id: str = typer.Argument(...),
+    reason: str = typer.Option(..., "--reason"),
+) -> None:
+    """Restore the prior active artifact and retain a rollback card."""
+    try:
+        item = _evolution_runtime().releases.rollback(release_id, reason=reason)
+    except (KeyError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1)
+    console.print_json(data=item.as_dict())
 
 
 @knowledge_app.command("source-add")
