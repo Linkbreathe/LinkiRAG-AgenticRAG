@@ -5,6 +5,7 @@ from linki.retrieval.evidence_pack import build_evidence_pack
 from linki.retrieval.graph import PersonalizedPageRankRetriever
 from linki.retrieval.rerank import CrossEncoderReranker
 from linki.retrieval.spans import select_supporting_span
+from linki.tools.retrieve import fuse_candidate_channels
 
 
 def candidate(name: str, score: float = 1.0, *, channel: str = "hybrid") -> Candidate:
@@ -71,6 +72,14 @@ def test_rrf_fuses_channels_without_treating_raw_scores_as_calibrated():
     fused = reciprocal_rank_fusion([hybrid, graph])
     assert fused[0].chunk_id == "b"
     assert fused[0].channel == "graph+hybrid"
+
+
+def test_channel_fusion_honors_the_total_candidate_budget():
+    hybrid = [candidate(f"hybrid-{index}") for index in range(30)]
+    graph = [candidate(f"graph-{index}", channel="graph") for index in range(30)]
+    fused = fuse_candidate_channels([hybrid, graph], limit=30)
+    assert len(fused) == 30
+    assert {item.channel for item in fused} == {"hybrid", "graph"}
 
 
 def test_ppr_pilot_is_bounded_to_two_hops():

@@ -16,6 +16,13 @@ from linki.retrieval.rerank import CrossEncoderReranker
 from linki.retrieval.spans import select_supporting_span
 
 
+def fuse_candidate_channels(
+    channels: list[list[Candidate]], *, limit: int,
+) -> list[Candidate]:
+    """Fuse independently ranked channels without exceeding the candidate budget."""
+    return reciprocal_rank_fusion(channels)[:max(0, limit)]
+
+
 class Retriever:
     def __init__(
         self,
@@ -83,7 +90,10 @@ class Retriever:
                 query, seeds, snapshot_id,
                 getattr(self._s, "candidate_k", 30),
             )
-            candidates = reciprocal_rank_fusion([candidates, graph_hits])
+            candidates = fuse_candidate_channels(
+                [candidates, graph_hits],
+                limit=getattr(self._s, "candidate_k", 30),
+            )
         return candidates
 
     def retrieve(self, query: str, kb_tool_name: str | None = None) -> list[Evidence]:
