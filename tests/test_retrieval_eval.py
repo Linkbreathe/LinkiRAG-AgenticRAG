@@ -8,7 +8,10 @@ def test_retrieval_eval_reports_full_chain_recall_by_type():
     }]
     report = run_retrieval_eval(
         dataset,
-        lambda q, kb: [{"source": "one"}, {"source": "noise"}],
+        lambda q, kb: [
+            {"source": "one", "rerank_backend": "test-cross-encoder"},
+            {"source": "noise", "rerank_backend": "test-cross-encoder"},
+        ],
         "Retrieve_multihop",
     )
     assert report["aggregate"]["retrieval_recall"] == 0.5
@@ -16,6 +19,7 @@ def test_retrieval_eval_reports_full_chain_recall_by_type():
     assert report["aggregate"]["mrr"] == 1.0
     assert report["aggregate"]["ndcg"] > 0
     assert report["aggregate"]["source_diversity"] == 1.0
+    assert report["aggregate"]["rerank_backends"] == ["test-cross-encoder"]
     assert report["by_question_type"]["inference_query"]["n"] == 1
 
 

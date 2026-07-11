@@ -77,6 +77,10 @@ def run_retrieval_eval(
             "latency_seconds": round(elapsed, 4),
             "n_retrieved": len(evidence),
             "retrieved_sources": [item.get("source") for item in evidence],
+            "rerank_backends": sorted({
+                str(item.get("rerank_backend"))
+                for item in evidence if item.get("rerank_backend")
+            }),
             "source_diversity": round(len(set(sources)) / len(sources), 4) if sources else 0.0,
             "evidence_tokens": sum(
                 int(item.get("token_count") or estimate_tokens(item.get("text", "")))
@@ -117,6 +121,9 @@ def run_retrieval_eval(
             "offset_validity": round(sum(offsets) / len(offsets), 4) if offsets else None,
             "mean_latency_seconds": round(sum(row["latency_seconds"] for row in rows) / len(rows), 4) if rows else 0.0,
             "p95_latency_seconds": latencies[max(0, math.ceil(0.95 * len(latencies)) - 1)] if latencies else 0.0,
+            "rerank_backends": sorted({
+                backend for row in rows for backend in row.get("rerank_backends", [])
+            }),
         }
         return out
 
