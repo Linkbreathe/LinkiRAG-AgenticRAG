@@ -49,6 +49,14 @@ class Settings:
     qdrant_path: Path = Path(".linki/qdrant")
     parent_store_path: Path = Path(".linki/parent_store")
     markdown_dir: Path = Path(".linki/markdown")
+    cache_path: Path = Path(".linki/cache/linki.sqlite3")
+    snapshot_manifest_path: Path = Path(".linki/snapshots/manifest.json")
+    memory_path: Path = Path(".linki/memory/ledger.sqlite3")
+    knowledge_path: Path = Path(".linki/knowledge/ledger.sqlite3")
+    evolution_path: Path = Path(".linki/evolution/ledger.sqlite3")
+    qdrant_url: str | None = None  # set for server/Cloud; local path remains default
+    qdrant_api_key_env: str = "QDRANT_API_KEY"
+    qdrant_prefer_grpc: bool = False
 
     # —— chunking ——
     child_chunk_size: int = 500
@@ -67,7 +75,7 @@ class Settings:
     dense_query_prefix: str = ""
     dense_passage_prefix: str = ""
     sparse_model: str = "Qdrant/bm25"
-    provider: str = "openai"  # reuses linki provider factory (openai|deepseek)
+    provider: str = "openai"  # openai | deepseek | gateway (OpenAI-compatible)
     llm_model: str | None = None  # None -> provider default
     judge_provider: str = "openai"
     judge_model: str | None = None  # verifier/grader-as-judge; keep != llm_model
@@ -75,14 +83,51 @@ class Settings:
     # —— retrieval & loops ——
     retrieval_k: int = 5
     retrieval_score_threshold: float = 0.0
+    candidate_k: int = 30
+    rerank_k: int = 8
+    enable_local_reranker: bool = True
+    reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    supporting_span_chars: int = 1600
+    evidence_budget_fast: int = 1200
+    evidence_budget_balanced: int = 2400
+    evidence_budget_deep: int = 4000
+    graph_retrieval: str = "none"  # none | ppr_pilot (adapter injected at runtime)
     max_rounds: int = 2  # grader -> refine loop cap (per sub-query)
     max_attempts: int = 2  # verifier -> reflow cap (whole answer)
+
+    # —— adaptive execution (Stages 7-8) ——
+    # Kept behind a release gate: enable after project-specific quality floors
+    # pass, or opt in per request with fast/balanced/deep mode.
+    adaptive_enabled: bool = False
+    execution_mode: str = "auto"  # auto | fast | balanced | deep
+    default_deadline_ms: int | None = None
+    max_concurrency: int = 16
+    # Risk score thresholds stay disabled until calibrated on this project's
+    # corpus. Setting either above zero opts into that calibrated gate.
+    adaptive_low_score_threshold: float = 0.0
+    adaptive_min_score_margin: float = 0.0
 
     # —— observability / hooks (Phase 6) ——
     enable_cache: bool = True  # Pre: memoize identical (query, kb) fetches
     enable_dedup: bool = True  # Post: drop parents already collected this run
     enable_hook_trace: bool = True  # Post: emit retrieval events to the tracer
     enable_trace: bool = True  # write per-run JSONL + timeline.md under data_dir
+    enable_telemetry_persistence: bool = True
+    enable_persistent_cache: bool = True
+    enable_answer_cache: bool = True
+    enable_semantic_cache: bool = False  # requires a separately calibrated adapter
+    answer_cache_ttl_seconds: int = 86_400
+    retrieval_cache_ttl_seconds: int = 604_800
+
+    # —— governed long-term memory (Stage 11) ——
+    enable_memory: bool = True
+    memory_background_formation: bool = True
+    memory_token_budget: int = 300
+    episodic_retention_days: int = 90
+
+    # —— controlled evolution (Stage 13) ——
+    enable_feedback_ledger: bool = True
+    gap_min_frequency: int = 2
 
     # —— knowledge bases ——
     knowledge_bases: list[KnowledgeBase] = field(
@@ -108,6 +153,11 @@ class Settings:
             qdrant_path=anchor(self.qdrant_path),
             parent_store_path=anchor(self.parent_store_path),
             markdown_dir=anchor(self.markdown_dir),
+            cache_path=anchor(self.cache_path),
+            snapshot_manifest_path=anchor(self.snapshot_manifest_path),
+            memory_path=anchor(self.memory_path),
+            knowledge_path=anchor(self.knowledge_path),
+            evolution_path=anchor(self.evolution_path),
         )
 
     def kb(self, name: str) -> KnowledgeBase | None:
@@ -166,12 +216,28 @@ def load_settings(path: str | Path | None = None, *, root: str | Path | None = N
         "max_parent_size", "sparse_vector_name", "dense_model",
         "dense_query_prefix", "dense_passage_prefix", "sparse_model",
         "provider", "llm_model", "judge_provider", "judge_model",
-        "retrieval_k", "retrieval_score_threshold", "max_rounds", "max_attempts",
+        "retrieval_k", "retrieval_score_threshold", "candidate_k", "rerank_k",
+        "enable_local_reranker", "reranker_model", "supporting_span_chars",
+        "evidence_budget_fast", "evidence_budget_balanced", "evidence_budget_deep",
+        "graph_retrieval", "max_rounds", "max_attempts",
+        "adaptive_enabled", "execution_mode", "default_deadline_ms", "max_concurrency",
+        "adaptive_low_score_threshold", "adaptive_min_score_margin",
         "enable_cache", "enable_dedup", "enable_hook_trace", "enable_trace",
+        "enable_telemetry_persistence",
+        "qdrant_url", "qdrant_api_key_env", "qdrant_prefer_grpc",
+        "enable_persistent_cache", "enable_answer_cache", "enable_semantic_cache",
+        "answer_cache_ttl_seconds", "retrieval_cache_ttl_seconds",
+        "enable_memory", "memory_background_formation", "memory_token_budget",
+        "episodic_retention_days",
+        "enable_feedback_ledger", "gap_min_frequency",
     ):
         if key in data:
             kwargs[key] = data[key]
-    for key in ("data_dir", "qdrant_path", "parent_store_path", "markdown_dir"):
+    for key in (
+        "data_dir", "qdrant_path", "parent_store_path", "markdown_dir",
+        "cache_path", "snapshot_manifest_path", "memory_path", "knowledge_path",
+        "evolution_path",
+    ):
         if key in data:
             kwargs[key] = Path(data[key])
     if "knowledge_bases" in data:

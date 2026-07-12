@@ -29,6 +29,7 @@ dependencies = [
 [project.optional-dependencies]
 eval = ["ragas>=0.2", "tiktoken>=0.8"]
 ui = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "python-multipart>=0.0.9"]
+cache = ["redis>=5"]
 
 [project.scripts]
 linki = "linki.cli.app:run"

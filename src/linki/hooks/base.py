@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from linki.graph.state import Evidence
 
@@ -43,9 +43,15 @@ class HookContext:
     # run-scoped mutable state
     cache: dict[tuple[str, str], list[Evidence]] = field(default_factory=dict)
     seen_parents: set[str] = field(default_factory=set)
+    request_context: Any = None
+    snapshot_ids: dict[str, str] = field(default_factory=dict)
+    persistent_cache: Any = None
+    cache_dimensions: dict[str, Any] = field(default_factory=dict)
+    async_flights: Any = None
     # transient signals about the most recent fetch, for Post hooks (e.g. trace)
     last_latency_ms: float = 0.0
     last_from_cache: bool = False
+    last_cache_level: str | None = None
 
     def run_pre(self, query: str, kb: str) -> list[Evidence] | None:
         for hook in self.pre:
@@ -77,6 +83,7 @@ def run_retrieval(retrieve_fn, query: str, kb: str) -> list[Evidence]:
     if ctx is None:
         return retrieve_fn(query, kb)
 
+    ctx.last_cache_level = None
     cached = ctx.run_pre(query, kb)
     ctx.last_from_cache = cached is not None
     start = time.perf_counter()

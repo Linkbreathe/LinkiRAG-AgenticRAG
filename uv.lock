@@ -1088,6 +1088,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+cache = [
+    { name = "redis" },
+]
 eval = [
     { name = "ragas" },
     { name = "tiktoken" },
@@ -1119,12 +1122,13 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "qdrant-client", specifier = ">=1.12" },
     { name = "ragas", marker = "extra == 'eval'", specifier = ">=0.2" },
+    { name = "redis", marker = "extra == 'cache'", specifier = ">=5" },
     { name = "rich", specifier = ">=13.8" },
     { name = "tiktoken", marker = "extra == 'eval'", specifier = ">=0.8" },
     { name = "typer", specifier = ">=0.12" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'ui'", specifier = ">=0.30" },
 ]
-provides-extras = ["eval", "ui"]
+provides-extras = ["eval", "ui", "cache"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
@@ -2222,6 +2226,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d2/52/c49cc057a7aa31d094bb286b87d99158c29511a109abe28e9d6ce4ffd3ef/ragas-0.3.1.tar.gz", hash = "sha256:a53c6a137c5eeb9ddf2b9ba0f86385a28172c1cb218aa225fe21c55d8ad2bf2d", size = 159590, upload-time = "2025-08-11T11:15:31.783Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ff/2e/1e06552b2c2e2b979664ac50492a89f84da51e4b1c16e39364c0ecdc09ae/ragas-0.3.1-py3-none-any.whl", hash = "sha256:b61ba63c56d460e43edb0f99a65559766961ac64e628bc5ccaa61da7e8687fa5", size = 190654, upload-time = "2025-08-11T11:15:30.442Z" },
+]
+
+[[package]]
+name = "redis"
+version = "8.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/c3/928b290c2c0ca99ab96eea5b4ff8f30be8112b075301a7d3ba214a3c8c12/redis-8.0.1.tar.gz", hash = "sha256:afc5a7a2f5a084f5b1880dec548dd45be17db7e43c82a30d84f952aefb05cfb0", size = 5114170, upload-time = "2026-06-23T14:52:37.728Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fd/0a/c2345ebf1ebe70840ce3f6c6ee612f8fa749cfbd1b03069c53bf0c62aaad/redis-8.0.1-py3-none-any.whl", hash = "sha256:47daa35a058c23468d6437f17a8c76882cb316b838ef763036af99b96cedd743", size = 502406, upload-time = "2026-06-23T14:52:36.137Z" },
 ]
 
 [[package]]

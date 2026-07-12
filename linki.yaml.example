@@ -3,14 +3,50 @@
 #
 # Model provider and API keys live in .env (never here):
 #   OPENAI_API_KEY=sk-...        (or DEEPSEEK_API_KEY=...)
-#   LINKI_PROVIDER=openai        (openai | deepseek)
+#   LINKI_PROVIDER=openai        (openai | deepseek | gateway)
 #   LINKI_MODEL=gpt-4o-mini
 #   LINKI_JUDGE_MODEL=gpt-4o-mini   # verifier/grader; use a different model than LINKI_MODEL
+# Gateway adapter (LiteLLM-compatible; optional):
+#   LINKI_GATEWAY_BASE_URL=http://localhost:4000/v1
+#   LINKI_GATEWAY_API_KEY=...
 
 # —— retrieval & agentic loops ——
 retrieval_k: 5
+candidate_k: 30      # high-recall child candidates before reranking
+rerank_k: 8          # parents/spans retained after local cross-encoder
+enable_local_reranker: true
+reranker_model: Xenova/ms-marco-MiniLM-L-6-v2
+supporting_span_chars: 1600
+evidence_budget_fast: 1200
+evidence_budget_balanced: 2400
+evidence_budget_deep: 4000
+graph_retrieval: none  # none | ppr_pilot (requires an injected graph adapter)
 max_rounds: 2        # grader -> refine loop cap (per sub-query)
 max_attempts: 2      # verifier -> reflow cap (whole answer)
+
+# —— adaptive runtime / versioned cache ——
+adaptive_enabled: false  # shadow-only in auto until project quality gates pass
+execution_mode: auto  # auto | fast | balanced | deep
+max_concurrency: 16
+enable_trace: true
+enable_telemetry_persistence: true
+enable_persistent_cache: true
+enable_answer_cache: true
+enable_semantic_cache: false  # only enable after project-specific false-hit calibration
+answer_cache_ttl_seconds: 86400
+retrieval_cache_ttl_seconds: 604800
+enable_memory: true
+memory_background_formation: true
+memory_token_budget: 300
+episodic_retention_days: 90
+# Source/Claim ledger, Wiki metadata, and temporal graph projection:
+# knowledge_path: .linki/knowledge/ledger.sqlite3
+enable_feedback_ledger: true
+gap_min_frequency: 2
+# evolution_path: .linki/evolution/ledger.sqlite3
+# qdrant_url: http://localhost:6333  # optional server profile; embedded is default
+# qdrant_api_key_env: QDRANT_API_KEY
+# qdrant_prefer_grpc: true
 
 # —— chunking ——
 child_chunk_size: 500

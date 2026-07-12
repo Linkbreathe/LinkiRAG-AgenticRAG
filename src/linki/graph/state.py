@@ -15,13 +15,26 @@ from typing import Annotated, Any, Callable, TypedDict
 
 
 class Evidence(TypedDict, total=False):
+    evidence_id: str
     chunk_id: str
     parent_id: str
     kb: str
     source: str
+    source_id: str
+    source_version: str
     heading_path: str
     text: str
+    quote: str
+    char_start: int
+    char_end: int
     score: float
+    retrieval_score: float
+    rerank_score: float | None
+    rerank_backend: str
+    supports: list[str]
+    token_count: int
+    content_hash: str
+    offset_valid: bool
 
 
 class Citation(TypedDict, total=False):
@@ -30,6 +43,10 @@ class Citation(TypedDict, total=False):
     heading_path: str
     parent_id: str
     chunk_id: str
+    evidence_id: str
+    quote: str
+    char_start: int
+    char_end: int
 
 
 class SubQuery(TypedDict, total=False):
@@ -67,12 +84,27 @@ class LinkiGraphState(TypedDict, total=False):
     # —— input / session ——
     question: str
     session_context: str
+    execution_mode: str
+    deadline_ms: int | None
+    memory_context: str
+    memory_snapshot_id: str
+    recalled_memories: list[dict[str, Any]]
 
     # —— runtime deps (injected at invoke time) ——
     model: Any
     judge: Any
     settings: Any
     retrieve_fn: RetrieveFn
+
+    # —— local adaptive policy / budgets ——
+    policy: dict[str, Any]
+    shadow_policy: dict[str, Any]
+    policy_path: str  # legacy | p0 | p1 | p2 | p3
+    policy_escalated: bool
+    policy_replanned: bool
+    retrieval_risk: dict[str, Any]
+    answer_risk: dict[str, Any]
+    verify_required: bool
 
     # —— router / rewrite ——
     route: str  # chat | retrieve | clarify
@@ -88,6 +120,9 @@ class LinkiGraphState(TypedDict, total=False):
     # —— retrieval results ——
     target_kb: str
     evidence: Annotated[list[Evidence], _evidence_union]
+    packed_evidence: list[Evidence]
+    evidence_pack: dict[str, Any]
+    evidence_pack_id: str
     retrieval_keys: Annotated[set[str], _set_union]
     gaps: Annotated[list[str], _list_add]
 

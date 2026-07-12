@@ -87,7 +87,8 @@ class Tracer:
             etype = ev.get("type", "event")
             bits = []
             for key in ("round", "query", "kb", "n_hits", "top_score", "n_citations",
-                        "sufficient", "kept", "missing", "detail"):
+                        "sufficient", "kept", "missing", "policy_path", "llm_calls",
+                        "input_tokens", "output_tokens", "total_ms", "detail"):
                 if ev.get(key) not in (None, "", []):
                     bits.append(f"{key}={ev[key]}")
             suffix = (" · " + ", ".join(bits)) if bits else ""

@@ -5,9 +5,13 @@ import {
   AlertTriangle,
   ArrowRight,
   Bot,
+  BookOpen,
+  Brain,
   Check,
   ChevronDown,
+  Clock3,
   Compass,
+  Cpu,
   Database,
   FileUp,
   GitBranch,
@@ -17,13 +21,24 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
-  ShieldCheck,
+  ThumbsDown,
+  ThumbsUp,
   Trash2,
   Upload
 } from "lucide-react";
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { clearTopic, createTopic, getTopics, sendChat, uploadDocuments } from "./api";
-import type { ChatMessage, ChatResponse, Topic, TraceStep } from "./types";
+import {
+  clearTopic,
+  createTopic,
+  forgetMemory,
+  getMemory,
+  getTopics,
+  getWiki,
+  sendChat,
+  sendFeedback,
+  uploadDocuments
+} from "./api";
+import type { ChatMessage, ChatResponse, ExecutionMode, MemoryItem, Topic, TraceStep, WikiPage } from "./types";
 
 function formatCount(value: number, singular: string, plural = `${singular}s`) {
   return `${value} ${value === 1 ? singular : plural}`;
@@ -42,21 +57,11 @@ function formatTarget(target?: string) {
 }
 
 function runSummary(result: ChatResponse | null) {
-  const steps = result?.trace ?? [];
-  const planSteps = steps.filter((step) => step.kind === "plan");
-  const planCount = planSteps.reduce((sum, step) => sum + (step.sub_queries?.length ?? 0), 0);
-  const retrieveRounds = steps.filter((step) => step.kind === "retrieve" && step.round).length;
-  const insufficientGrades = steps.filter((step) => step.kind === "grade" && step.status === "insufficient").length;
-  const verifySteps = steps.filter((step) => step.kind === "verify");
-  const lastVerify = verifySteps[verifySteps.length - 1];
-  const reflowed = verifySteps.some((step) => step.status === "failed") && planSteps.length > 1;
-
   return {
-    planCount,
-    retrieveRounds,
-    insufficientGrades,
-    verification: lastVerify?.status ?? "pending",
-    reflowed,
+    policy: result?.policy_path?.toUpperCase() ?? "—",
+    calls: result?.cost?.llm_calls ?? 0,
+    tokens: result?.cost?.total_tokens ?? 0,
+    latency: result?.cost?.latency_ms ?? 0,
     citations: result?.citations.length ?? 0
   };
 }
@@ -113,6 +118,40 @@ function SelectBox({
   );
 }
 
+const executionModes: { value: ExecutionMode; label: string; hint: string }[] = [
+  { value: "auto", label: "Auto", hint: "Route locally by complexity and risk" },
+  { value: "fast", label: "Fast", hint: "Prefer the one-call factual path" },
+  { value: "balanced", label: "Balanced", hint: "Always include a query plan" },
+  { value: "deep", label: "Deep", hint: "Grade evidence and verify the answer" }
+];
+
+function ModeSelect({ value, onChange }: { value: ExecutionMode; onChange: (value: ExecutionMode) => void }) {
+  const selected = executionModes.find((item) => item.value === value);
+  return (
+    <label className="field">
+      <span>Execution mode</span>
+      <Select.Root value={value} onValueChange={(next) => onChange(next as ExecutionMode)}>
+        <Select.Trigger className="select-trigger" aria-label="Execution mode">
+          <Select.Value />
+          <Select.Icon><ChevronDown size={15} /></Select.Icon>
+        </Select.Trigger>
+        <Select.Portal>
+          <Select.Content className="select-content mode-content" position="popper" sideOffset={6}>
+            <Select.Viewport>
+              {executionModes.map((item) => (
+                <Select.Item className="select-item mode-item" value={item.value} key={item.value}>
+                  <Select.ItemText>{item.label} — {item.hint}</Select.ItemText>
+                </Select.Item>
+              ))}
+            </Select.Viewport>
+          </Select.Content>
+        </Select.Portal>
+      </Select.Root>
+      <small>{selected?.hint}</small>
+    </label>
+  );
+}
+
 function IconTip({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Tooltip.Root delayDuration={250}>
@@ -160,34 +199,28 @@ function TopicItem({
 
 function RunSummary({ result }: { result: ChatResponse | null }) {
   const summary = runSummary(result);
-  const verificationText =
-    summary.verification === "passed"
-      ? "Verified"
-      : summary.verification === "failed"
-        ? "Needs review"
-        : "No run";
 
   return (
     <div className="run-summary" aria-label="Latest run summary">
       <div className="run-metric">
         <GitBranch size={15} />
-        <span>Plan</span>
-        <strong>{summary.planCount || "—"}</strong>
+        <span>Policy</span>
+        <strong>{summary.policy}</strong>
       </div>
       <div className="run-metric">
-        <Search size={15} />
-        <span>Searches</span>
-        <strong>{summary.retrieveRounds || "—"}</strong>
+        <Cpu size={15} />
+        <span>Calls</span>
+        <strong>{result ? summary.calls : "—"}</strong>
       </div>
-      <div className={summary.insufficientGrades ? "run-metric warning" : "run-metric"}>
-        <AlertTriangle size={15} />
-        <span>Refine</span>
-        <strong>{summary.insufficientGrades || "—"}</strong>
+      <div className="run-metric">
+        <Database size={15} />
+        <span>Tokens</span>
+        <strong>{result ? summary.tokens.toLocaleString() : "—"}</strong>
       </div>
-      <div className={summary.verification === "failed" ? "run-metric danger" : "run-metric success"}>
-        {summary.verification === "failed" ? <ShieldAlert size={15} /> : <ShieldCheck size={15} />}
-        <span>{summary.reflowed ? "Reflowed" : "Verify"}</span>
-        <strong>{verificationText}</strong>
+      <div className="run-metric">
+        <Clock3 size={15} />
+        <span>Latency</span>
+        <strong>{result ? `${Math.round(summary.latency)} ms` : "—"}</strong>
       </div>
       <div className="run-metric">
         <MessageSquare size={15} />
@@ -309,8 +342,109 @@ function EvidencePanel({ result }: { result: ChatResponse | null }) {
           </div>
           {item.heading_path ? <small>{item.heading_path}</small> : null}
           <p>{item.text?.slice(0, 320) || "No preview text returned."}</p>
+          <div className="evidence-meta">
+            <span>{item.token_count ? `${item.token_count} tokens` : "token count unavailable"}</span>
+            <span>
+              {typeof item.rerank_score === "number" ? `rerank ${item.rerank_score.toFixed(3)}` : item.rerank_backend || "retrieval score"}
+            </span>
+            {typeof item.char_start === "number" && typeof item.char_end === "number" ? (
+              <span>chars {item.char_start}–{item.char_end}</span>
+            ) : null}
+          </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function MemoryPanel({
+  items,
+  busy,
+  onForget
+}: {
+  items: MemoryItem[];
+  busy: boolean;
+  onForget: (memoryId: string) => void;
+}) {
+  if (!items.length) {
+    return (
+      <div className="empty">
+        No active memory in this user scope. Say “Remember that …” to create an auditable preference.
+      </div>
+    );
+  }
+  return (
+    <div className="governance-list">
+      {items.map((item) => (
+        <div className="governance-row" key={item.memory_id}>
+          <div className="governance-icon"><Brain size={15} /></div>
+          <div>
+            <strong>{String(item.content.value ?? item.content.outcome ?? item.content.kind ?? "Memory")}</strong>
+            <span>{item.type} · {item.status} · v{item.version}</span>
+            <code>{item.memory_id}</code>
+          </div>
+          <IconTip label="Forget and tombstone this memory">
+            <button
+              type="button"
+              className="icon-button compact danger-text"
+              onClick={() => onForget(item.memory_id)}
+              disabled={busy}
+              aria-label={`Forget memory ${item.memory_id}`}
+            >
+              <Trash2 size={14} />
+            </button>
+          </IconTip>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function WikiPanel({ pages, snapshotId }: { pages: WikiPage[]; snapshotId: string | null }) {
+  if (!pages.length) {
+    return (
+      <div className="empty">
+        No published Wiki projection for this tenant. Approve sourced claims, then publish a knowledge snapshot.
+      </div>
+    );
+  }
+  return (
+    <div className="governance-list">
+      {pages.map((page) => (
+        <div className="governance-row wiki-row" key={page.page_id}>
+          <div className="governance-icon"><BookOpen size={15} /></div>
+          <div>
+            <strong>{page.title}</strong>
+            <span>{page.domain} / {page.topic} · {page.status} · {page.claim_ids.length} claims</span>
+            <code>{page.slug}</code>
+          </div>
+        </div>
+      ))}
+      <div className="snapshot-note">Active snapshot <code>{snapshotId}</code></div>
+    </div>
+  );
+}
+
+function CostPanel({ result }: { result: ChatResponse | null }) {
+  if (!result) return <div className="empty">Run a question to inspect node-level usage and versions.</div>;
+  return (
+    <div className="cost-panel">
+      <div className="run-identity">
+        <span>Run <code>{result.run_id}</code></span>
+        <span>Pack <code>{result.evidence_pack_id || "none"}</code></span>
+        <span>{result.cache.hit ? "Exact cache hit" : result.cache.coalesced ? "Single-flight reuse" : "Fresh execution"}</span>
+      </div>
+      {result.cost.node_costs.length ? (
+        <div className="cost-list">
+          {result.cost.node_costs.map((row, index) => (
+            <div className="cost-row" key={`${row.node}-${index}`}>
+              <div><strong>{row.node}</strong><span>{row.prompt_version} · {row.model}</span></div>
+              <code>{row.input_tokens + row.output_tokens} tok</code>
+              <span>{Math.round(row.total_ms)} ms</span>
+            </div>
+          ))}
+        </div>
+      ) : <div className="empty compact">No model call was needed for this run.</div>}
     </div>
   );
 }
@@ -369,6 +503,9 @@ export function App() {
   const [topics, setTopics] = useState<Topic[]>([]);
   const [uploadTopic, setUploadTopic] = useState("default");
   const [searchTopic, setSearchTopic] = useState("default");
+  const [mode, setMode] = useState<ExecutionMode>("auto");
+  const [tenant, setTenant] = useState("default");
+  const [user, setUser] = useState("anonymous");
   const [newTopic, setNewTopic] = useState("");
   const [topicHint, setTopicHint] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -378,6 +515,10 @@ export function App() {
   const [notice, setNotice] = useState("");
   const [clearArmed, setClearArmed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [memoryItems, setMemoryItems] = useState<MemoryItem[]>([]);
+  const [wikiPages, setWikiPages] = useState<WikiPage[]>([]);
+  const [wikiSnapshot, setWikiSnapshot] = useState<string | null>(null);
+  const [feedbackSent, setFeedbackSent] = useState<"up" | "down" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const currentUploadTopic = useMemo(
@@ -413,9 +554,26 @@ export function App() {
     setSearchTopic((current) => (data.topics.some((topic) => topic.name === current) ? current : chosen));
   }
 
+  async function refreshGovernance() {
+    const [memory, wiki] = await Promise.all([
+      getMemory(tenant || "default", user || "anonymous"),
+      getWiki(tenant || "default")
+    ]);
+    setMemoryItems(memory.items.filter((item) => item.status !== "DELETED"));
+    setWikiPages(wiki.pages);
+    setWikiSnapshot(wiki.snapshot_id);
+  }
+
   useEffect(() => {
     refreshTopics().catch((error) => setNotice(error.message));
   }, []);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      refreshGovernance().catch((error) => setNotice(error.message));
+    }, 200);
+    return () => window.clearTimeout(timeout);
+  }, [tenant, user]);
 
   useEffect(() => {
     setClearArmed(false);
@@ -445,7 +603,7 @@ export function App() {
     if (!files?.length) return;
     setBusy(true);
     try {
-      const data = await uploadDocuments(uploadTopic, files);
+      const data = await uploadDocuments(uploadTopic, files, tenant || "default");
       setTopics(data.topics);
       setNotice(`Added ${formatCount(data.added, "file")} to ${data.topic.collection}.`);
       setSearchTopic(data.topic.name);
@@ -490,15 +648,52 @@ export function App() {
     setInput("");
     setBusy(true);
     try {
-      const result = await sendChat(message, searchTopic, messages);
+      const result = await sendChat(message, searchTopic, messages, {
+        mode,
+        tenant: tenant || "default",
+        user: user || "anonymous",
+        acl: ["public"]
+      });
       setLastResult(result);
+      setFeedbackSent(null);
       setMessages([...nextMessages, { role: "assistant", content: result.answer }]);
+      await refreshGovernance();
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
       setMessages([...nextMessages, { role: "assistant", content: `Error: ${text}` }]);
       setNotice(text);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleForget(memoryId: string) {
+    setBusy(true);
+    try {
+      await forgetMemory(memoryId, tenant || "default", user || "anonymous");
+      await refreshGovernance();
+      setNotice("Memory tombstoned and its recoverable payload removed.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleFeedback(kind: "thumbs_up" | "thumbs_down") {
+    if (!lastResult || feedbackSent) return;
+    try {
+      await sendFeedback(
+        kind,
+        lastResult.run_id,
+        tenant || "default",
+        user || "anonymous",
+        { question: messages.filter((item) => item.role === "user").at(-1)?.content, policy_path: lastResult.policy_path }
+      );
+      setFeedbackSent(kind === "thumbs_up" ? "up" : "down");
+      setNotice("Feedback recorded as an observation. It will not change production directly.");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -712,6 +907,27 @@ export function App() {
                     topics={topics}
                     hint={currentSearchTopic ? `Tool: ${currentSearchTopic.tool_name}` : undefined}
                   />
+                  <ModeSelect value={mode} onChange={setMode} />
+                  <label className="field">
+                    <span>Tenant</span>
+                    <input
+                      value={tenant}
+                      onChange={(event) => setTenant(event.target.value)}
+                      placeholder="default"
+                      disabled={busy}
+                    />
+                    <small>Isolation and snapshot namespace</small>
+                  </label>
+                  <label className="field">
+                    <span>User</span>
+                    <input
+                      value={user}
+                      onChange={(event) => setUser(event.target.value)}
+                      placeholder="anonymous"
+                      disabled={busy}
+                    />
+                    <small>Personal memory and cache scope</small>
+                  </label>
                 </div>
 
                 <div className="messages" aria-live="polite">
@@ -761,13 +977,38 @@ export function App() {
                     {busy ? "Sending" : "Send"}
                   </button>
                 </form>
+                {lastResult ? (
+                  <div className="answer-feedback">
+                    <div>
+                      <strong>{lastResult.policy_path.toUpperCase()}</strong>
+                      <span>{lastResult.policy.reason || "Adaptive policy decision"}</span>
+                    </div>
+                    <div className="feedback-actions" aria-label="Rate this answer">
+                      <span>{feedbackSent ? "Feedback recorded" : "Was this useful?"}</span>
+                      <button
+                        type="button"
+                        className={feedbackSent === "up" ? "icon-button compact selected" : "icon-button compact"}
+                        onClick={() => handleFeedback("thumbs_up")}
+                        disabled={Boolean(feedbackSent)}
+                        aria-label="Helpful answer"
+                      ><ThumbsUp size={14} /></button>
+                      <button
+                        type="button"
+                        className={feedbackSent === "down" ? "icon-button compact selected" : "icon-button compact"}
+                        onClick={() => handleFeedback("thumbs_down")}
+                        disabled={Boolean(feedbackSent)}
+                        aria-label="Answer needs work"
+                      ><ThumbsDown size={14} /></button>
+                    </div>
+                  </div>
+                ) : null}
               </section>
 
               <aside className="panel inspect-panel" aria-labelledby="inspect-heading">
                 <div className="panel-header compact">
                   <div>
                     <h2 id="inspect-heading">Inspect</h2>
-                    <p>Review how Linki planned, searched, graded, and verified this answer.</p>
+                    <p>Inspect policy, evidence, cost, governed memory, and published knowledge.</p>
                   </div>
                 </div>
                 <RunSummary result={lastResult} />
@@ -777,6 +1018,9 @@ export function App() {
                     <Tabs.Trigger value="plan">Plan</Tabs.Trigger>
                     <Tabs.Trigger value="evidence">Evidence</Tabs.Trigger>
                     <Tabs.Trigger value="sources">Sources</Tabs.Trigger>
+                    <Tabs.Trigger value="cost">Cost</Tabs.Trigger>
+                    <Tabs.Trigger value="memory">Memory</Tabs.Trigger>
+                    <Tabs.Trigger value="wiki">Wiki</Tabs.Trigger>
                   </Tabs.List>
                   <Tabs.Content value="trace" className="tab-panel">
                     <TracePanel result={lastResult} />
@@ -800,6 +1044,15 @@ export function App() {
                     ) : (
                       <div className="empty">No citations yet. Sources appear after an answer is generated.</div>
                     )}
+                  </Tabs.Content>
+                  <Tabs.Content value="cost" className="tab-panel">
+                    <CostPanel result={lastResult} />
+                  </Tabs.Content>
+                  <Tabs.Content value="memory" className="tab-panel">
+                    <MemoryPanel items={memoryItems} busy={busy} onForget={handleForget} />
+                  </Tabs.Content>
+                  <Tabs.Content value="wiki" className="tab-panel">
+                    <WikiPanel pages={wikiPages} snapshotId={wikiSnapshot} />
                   </Tabs.Content>
                 </Tabs.Root>
               </aside>

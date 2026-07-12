@@ -190,7 +190,11 @@ def _run_agentic(q, *, model, judge, settings, retrieve_fn, app=None):
     for key in ("llm_calls", "input_tokens", "output_tokens", "total_tokens"):
         telemetry[key] += judge_usage[key]
     telemetry["latency_seconds"] = round(elapsed, 3)
-    return state.get("final_answer") or state.get("answer") or "", state.get("evidence") or [], telemetry
+    return (
+        state.get("final_answer") or state.get("answer") or "",
+        state.get("packed_evidence") or state.get("evidence") or [],
+        telemetry,
+    )
 
 
 def _run_naive(q, *, model, settings, retrieve_fn):

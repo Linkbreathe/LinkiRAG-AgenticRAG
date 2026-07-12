@@ -1,4 +1,5 @@
 export type Role = "user" | "assistant";
+export type ExecutionMode = "auto" | "fast" | "balanced" | "deep";
 
 export interface Topic {
   name: string;
@@ -55,6 +56,7 @@ export interface TraceStep {
 }
 
 export interface Evidence {
+  evidence_id?: string;
   chunk_id?: string;
   parent_id?: string;
   kb?: string;
@@ -62,6 +64,14 @@ export interface Evidence {
   heading_path?: string;
   text?: string;
   score?: number;
+  retrieval_score?: number;
+  rerank_score?: number | null;
+  rerank_backend?: string;
+  quote?: string;
+  char_start?: number;
+  char_end?: number;
+  token_count?: number;
+  supports?: string[];
 }
 
 export interface Citation {
@@ -70,7 +80,70 @@ export interface Citation {
   heading_path?: string;
   parent_id?: string;
   chunk_id?: string;
+  evidence_id?: string;
+  quote?: string;
+  char_start?: number;
+  char_end?: number;
   label: string;
+}
+
+export interface PolicyDecision {
+  path?: string;
+  mode?: ExecutionMode;
+  reason?: string;
+  signals?: string[];
+  confidence?: number;
+  budget?: {
+    max_model_calls?: number;
+    max_input_tokens?: number;
+    evidence_tokens?: number;
+    deadline_ms?: number;
+  };
+}
+
+export interface NodeCost {
+  node: string;
+  model: string;
+  prompt_version: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_ms: number;
+  usage_source: "provider" | "estimated";
+}
+
+export interface RunCost {
+  llm_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  node_costs: NodeCost[];
+}
+
+export interface MemoryItem {
+  memory_id: string;
+  type: string;
+  scope: string;
+  status: string;
+  content: Record<string, unknown>;
+  confidence: number;
+  version: number;
+  source_episode_ids: string[];
+  recall_score?: number;
+}
+
+export interface WikiPage {
+  page_id: string;
+  version: number;
+  slug: string;
+  title: string;
+  domain: string;
+  topic: string;
+  snapshot_id: string;
+  status: string;
+  markdown: string;
+  claim_ids: string[];
+  source_spans: Record<string, unknown>[];
 }
 
 export interface ChatResponse {
@@ -79,4 +152,23 @@ export interface ChatResponse {
   evidence: Evidence[];
   citations: Citation[];
   topic: Topic;
+  run_id: string;
+  policy: PolicyDecision;
+  policy_path: string;
+  shadow_policy?: PolicyDecision | null;
+  cost: RunCost;
+  cache: { hit?: boolean; coalesced?: boolean; source?: string | null };
+  snapshots: Record<string, string>;
+  versions: Record<string, unknown>;
+  evidence_pack_id?: string;
+  evidence_pack?: {
+    token_budget: number;
+    token_count: number;
+    units: Evidence[];
+  };
+  memory: {
+    snapshot_id?: string;
+    recalled: MemoryItem[];
+    changes: MemoryItem[];
+  };
 }
