@@ -1,0 +1,16 @@
+# Read-only workspace configuration for the isolated MultiHop-RAG benchmark.
+# Start with: LINKI_CONFIG=benchmark-multihop.yaml uv run linki web --port 7861
+data_dir: .linki/benchmarks/multihop-rag/runtime
+qdrant_path: .linki/benchmarks/multihop-rag/qdrant
+parent_store_path: .linki/benchmarks/multihop-rag/parent_store
+markdown_dir: .linki/benchmarks/multihop-rag/markdown
+cache_path: .linki/benchmarks/multihop-rag/runtime/cache/linki.sqlite3
+snapshot_manifest_path: .linki/benchmarks/multihop-rag/runtime/snapshots/manifest.json
+memory_path: .linki/benchmarks/multihop-rag/runtime/memory/ledger.sqlite3
+knowledge_path: .linki/benchmarks/multihop-rag/runtime/knowledge/ledger.sqlite3
+evolution_path: .linki/benchmarks/multihop-rag/runtime/evolution/ledger.sqlite3
+
+knowledge_bases:
+  - name: multihop
+    title: MultiHop-RAG news corpus
+    usage_hint: English news articles; use for every MultiHop-RAG benchmark question.

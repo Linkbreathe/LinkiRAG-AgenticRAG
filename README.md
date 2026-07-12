@@ -348,6 +348,20 @@ Benchmark commands checkpoint progress and reject checkpoints whose dataset or
 protocol fingerprint differs. Raw answers and retrieved URLs stay under
 `.linki/benchmarks/.../runtime/eval/` and are intentionally git-ignored.
 
+### Browse the isolated benchmark corpus
+
+The benchmark corpus is kept out of the default workspace so benchmark inputs,
+gold labels, and everyday documents never mix. Launch its read-only workspace
+on a separate port:
+
+```bash
+LINKI_CONFIG=benchmark-multihop.yaml uv run linki web --port 7861
+```
+
+Open `http://127.0.0.1:7861` to query the `kb_multihop` collection. This
+switches the whole web instance to the benchmark corpus; evaluation reports
+remain JSON artifacts under `.linki/benchmarks/multihop-rag/runtime/eval/`.
+
 ---
 
 ## Project layout
