@@ -122,32 +122,9 @@ Server/Cloud.
 
 ### Architecture
 
-```text
-Request + tenant/user/ACL + immutable KB snapshot
-                         │
-                  local policy router
-             shadow only │ or enabled/explicit mode
-        ┌────────────────┼──────────────────────────┐
-       P0               P1             P2           P3
- local/chat       retrieve+answer   plan once   bounded plan/
- 0–1 call             1 call        ≤3 calls    grade/verify ≤7
-        └────────────────┴──────────────┴───────────┘
-                         │
-      hybrid candidates (30) ── optional corpus PPR pilot
-                         │
-      local cross-encoder → supporting spans → token-budgeted Evidence Pack
-                         │
-       cited answer + deterministic risk gate + optional verifier/reflow
-                         │
-       answer, evidence offsets, policy reason, cache/snapshot versions,
-              per-node model/token/latency telemetry and trace
-
-Governed side planes
-  Episodes → memory candidates → proposed/review/active/superseded/deleted
-  Sources  → claim versions → approval → Wiki + temporal graph projections
-  Feedback → knowledge gaps → offline candidate → test → shadow → canary
-                                                       └→ promote / rollback
-```
+<p align="center">
+  <img alt="LinkiRAG-AgenticRAG architecture" src="assets/Architecture.png" width="100%">
+</p>
 
 ---
 
