@@ -96,7 +96,9 @@ class Settings:
     max_attempts: int = 2  # verifier -> reflow cap (whole answer)
 
     # —— adaptive execution (Stages 7-8) ——
-    adaptive_enabled: bool = True
+    # Kept behind a release gate: enable after project-specific quality floors
+    # pass, or opt in per request with fast/balanced/deep mode.
+    adaptive_enabled: bool = False
     execution_mode: str = "auto"  # auto | fast | balanced | deep
     default_deadline_ms: int | None = None
     max_concurrency: int = 16

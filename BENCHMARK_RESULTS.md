@@ -1,14 +1,14 @@
-# MultiHop-RAG benchmark · 2026-07-11
+# MultiHop-RAG benchmark · 2026-07-11–12
 
 This report records the first reproducible benchmark of Linki against the
 official [MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG) dataset.
 
-## Adaptive upgrade checkpoint · commit `51811fe`
+## Adaptive upgrade checkpoint · commits `51811fe` / `4e6f756`
 
-This checkpoint evaluates the retrieval and governance pieces added by the
-second upgrade plan. It does **not** replace the historical N=12 end-to-end
-result below; the 120-question end-to-end experiment is recorded separately
-when complete.
+This checkpoint evaluates the retrieval, runtime and governance pieces added by
+the second upgrade plan. The formal N=120 end-to-end result below supersedes the
+N=3 pipeline smoke for release decisions; the older N=12 result remains at the
+end of this file as a historical baseline.
 
 ### Frozen protocol
 
@@ -55,6 +55,65 @@ The graph pilot improves every type over the frozen baseline, but inference
 remains the weakest slice: only 14.34% of questions retrieve the entire support
 chain. This is not sufficient to claim that graph retrieval has solved
 multi-hop inference.
+
+### Formal counterbalanced end-to-end result (N=120)
+
+The end-to-end set contains three disjoint 40-question folds selected with
+seeds `42 / 123 / 2026`: 30 comparison, inference, temporal and null questions
+each. Experiment ID `f37254decd7eee05` binds the selected rows, corpus snapshot,
+models and protocol.
+
+- Systems: fair single pass, frozen legacy full graph, adaptive auto, adaptive
+  deep.
+- Main model: `deepseek-chat`; judge: `deepseek-reasoner`; temperature `0`.
+- Per-row system order rotates to counterbalance warm/provider order effects.
+- Answer, retrieval, semantic, reranker-score and persistent caches are off.
+  Memory, feedback and trace persistence are also off.
+- Judge scoring calls are excluded from each system's telemetry.
+- Provider usage was returned for 100% of measured system calls. All 480 system
+  outputs completed without an error.
+
+| System | Calls | Mean tokens | p50 latency | p95 latency | Faithfulness | Quality | All-support | Refusal correct |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Fair single pass | **1.000** | **1,654** | **2.403 s** | **3.079 s** | **4.567** | 3.233 | 0.244 | 0.692 |
+| Legacy full graph | 6.917 | 9,222 | 22.426 s | 62.776 s | 4.417 | 3.592 | 0.433 | 0.650 |
+| Adaptive auto | 1.258 | 2,440 | 4.138 s | 6.950 s | 4.342 | **4.008** | 0.322 | **0.892** |
+| Adaptive deep | 5.233 | 10,262 | 21.106 s | 45.913 s | 4.267 | 3.475 | **0.467** | 0.675 |
+
+Adaptive auto versus the same-row legacy result:
+
+| Metric | Paired mean delta | Bootstrap 95% CI |
+|---|---:|---:|
+| Mean total tokens | -6,781 | [-7,427, -6,128] |
+| Mean latency | -23.080 s | [-25.857, -20.418] |
+| Model calls | -5.658 | [-5.975, -5.350] |
+| Quality (1–5) | +0.417 | [+0.067, +0.783] |
+| Faithfulness (1–5) | -0.075 | [-0.342, +0.183] |
+| Gold answer contained | +0.100 | [+0.033, +0.167] |
+| Refusal correctness | +0.242 | [+0.158, +0.333] |
+| Retrieval recall | -0.045 | [-0.108, +0.020] |
+| Strict all-support recall | -0.111 | [-0.222, 0.000] |
+
+#### Release-gate decision
+
+| Gate from the upgrade plan | Result | Decision |
+|---|---|---|
+| Mean tokens at least 40% below current full | -73.5% | **Pass** |
+| p50 latency at least 35% below current full | -81.5% | **Pass** |
+| P1 median model calls ≤ 1 | 1 call over 96 P1 rows | **Pass** |
+| Refusal-correct CI not below legacy −2 points | paired CI lower bound +15.8 points | **Pass** |
+| All-support CI not below legacy −2 points | paired CI lower bound −22.2 points | **Fail** |
+| P1 faithfulness not below fair single pass | 4.271 vs 4.469 | **Fail** |
+
+Adaptive auto therefore remains disabled by default. In `auto`, Linki executes
+the legacy graph and records the P0–P3 choice as a shadow policy; explicit
+`fast / balanced / deep` modes opt in per request. The next calibration should
+focus on P1 false negatives for comparison/inference/temporal questions, then
+use a locked validation set before changing the release gate.
+
+Adaptive deep is not an efficiency default either. It raised strict all-support
+recall by 3.33 paired points, but its 95% CI crossed zero and it consumed 11.3%
+more tokens than legacy. It remains an explicit high-risk/deep option.
 
 ### Stability and governed-memory checks
 

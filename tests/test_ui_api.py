@@ -36,7 +36,18 @@ def test_chat_api_exposes_policy_cost_snapshots_pack_and_versions(tmp_path):
     })
     assert response.status_code == 200
     data = response.json()
+    assert data["policy_path"] == "legacy"
+    assert data["shadow_policy"]["path"] == "p1"
+    assert any(step["kind"] == "shadow" for step in data["trace"])
+
+    opted_in = client.post("/api/chat", json={
+        "message": "What is the answer?", "topic": "default", "mode": "fast",
+        "tenant": "tenant-a", "user": "user-a", "acl": ["public"],
+    })
+    assert opted_in.status_code == 200
+    data = opted_in.json()
     assert data["policy_path"] == "p1"
+    assert data["shadow_policy"] is None
     assert data["cost"]["llm_calls"] == 1
     assert data["run_id"]
     assert data["evidence_pack_id"]

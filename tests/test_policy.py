@@ -2,6 +2,7 @@ import json
 
 from conftest import FakeLLM, FakeSettings, ev
 
+from linki.graph.nodes import policy_node
 from linki.graph.workflow import answer_question, build_workflow
 from linki.routing.policy import decide_policy
 
@@ -25,6 +26,23 @@ def test_policy_is_local_and_conservatively_classifies_paths():
     assert decide_policy("Strictly verify this medical diagnosis").path == "p3"
     assert decide_policy("Strictly verify this medical diagnosis", mode="fast").path == "p3"
     assert decide_policy("simple", mode="deep").path == "p3"
+
+
+def test_failed_release_gate_keeps_auto_in_shadow_but_explicit_mode_opts_in():
+    settings = FakeSettings()
+    settings.adaptive_enabled = False
+    settings.execution_mode = "auto"
+    settings.default_deadline_ms = None
+    shadowed = policy_node({"question": "What is the release date?", "settings": settings})
+    assert shadowed["policy_path"] == "legacy"
+    assert shadowed["shadow_policy"]["path"] == "p1"
+
+    opted_in = policy_node({
+        "question": "What is the release date?", "settings": settings,
+        "execution_mode": "fast",
+    })
+    assert opted_in["policy_path"] == "p1"
+    assert "shadow_policy" not in opted_in
 
 
 def test_p0_exact_greeting_uses_no_model_call(tmp_path):

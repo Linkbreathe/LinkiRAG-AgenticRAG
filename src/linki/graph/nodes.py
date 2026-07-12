@@ -59,20 +59,23 @@ def _invoke(
 
 def policy_node(state: LinkiGraphState) -> dict[str, Any]:
     settings = state["settings"]
-    if not getattr(settings, "adaptive_enabled", False):
+    mode = state.get("execution_mode") or getattr(settings, "execution_mode", "auto")
+    policy_args = {
+        "mode": mode,
+        "session_context": state.get("session_context", ""),
+        "kb_count": len(getattr(settings, "knowledge_bases", []) or [None]),
+        "deadline_ms": (
+            state.get("deadline_ms")
+            if state.get("deadline_ms") is not None
+            else getattr(settings, "default_deadline_ms", None)
+        ),
+    }
+    shadow = None
+    if not getattr(settings, "adaptive_enabled", False) and mode == "auto":
+        shadow = decide_policy(state["question"], **policy_args)
         decision = legacy_policy()
     else:
-        decision = decide_policy(
-            state["question"],
-            mode=state.get("execution_mode") or getattr(settings, "execution_mode", "auto"),
-            session_context=state.get("session_context", ""),
-            kb_count=len(getattr(settings, "knowledge_bases", []) or [None]),
-            deadline_ms=(
-                state.get("deadline_ms")
-                if state.get("deadline_ms") is not None
-                else getattr(settings, "default_deadline_ms", None)
-            ),
-        )
+        decision = decide_policy(state["question"], **policy_args)
     payload = decision.as_dict()
     telemetry = current_telemetry()
     if telemetry:
@@ -81,12 +84,16 @@ def policy_node(state: LinkiGraphState) -> dict[str, Any]:
         "node": "policy", "type": "policy_decision", "policy_path": decision.path,
         "mode": decision.mode, "reason": decision.reason,
         "signals": list(decision.signals), "budget": payload["budget"],
+        "shadow_policy_path": shadow.path if shadow else None,
     })
-    return {
+    result = {
         "policy": payload,
         "policy_path": decision.path,
         "route_reason": decision.reason,
     }
+    if shadow is not None:
+        result["shadow_policy"] = shadow.as_dict()
+    return result
 
 
 def policy_route(state: LinkiGraphState) -> str:

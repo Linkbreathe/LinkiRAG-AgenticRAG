@@ -155,6 +155,7 @@ export interface ChatResponse {
   run_id: string;
   policy: PolicyDecision;
   policy_path: string;
+  shadow_policy?: PolicyDecision | null;
   cost: RunCost;
   cache: { hit?: boolean; coalesced?: boolean; source?: string | null };
   snapshots: Record<string, string>;

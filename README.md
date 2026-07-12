@@ -2,231 +2,304 @@
   <img alt="Linki logo" src="assets/logo.png" width="320px">
 </p>
 
-<h1 align="center">Linki · Agentic RAG</h1>
+<h1 align="center">Linki · Adaptive Agentic RAG</h1>
 
 <p align="center">
-  <strong>A reliable knowledge assistant that routes, retrieves, grades, cites — and honestly refuses when the knowledge base has no answer.</strong>
+  <strong>Evidence-grounded answers, governed memory and knowledge, and a release-gated path to self-evolution.</strong>
 </p>
 
 <p align="center">
-  <a href="#what-is-linki">What is Linki</a> •
+  <a href="#what-linki-is">Overview</a> •
   <a href="#architecture">Architecture</a> •
-  <a href="#reliability-features">Reliability</a> •
+  <a href="#benchmark-status">Benchmarks</a> •
   <a href="#install">Install</a> •
   <a href="#usage">Usage</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="#testing">Testing</a> •
-  <a href="#roadmap">Roadmap</a>
+  <a href="#evaluation">Evaluation</a>
 </p>
 
 ---
 
-## What is Linki
+## What Linki is
 
-Linki turns a plain "retrieve-once, then answer" RAG pipeline into an **Agentic RAG**:
-retrieval becomes a decision process, not a single function call. The model decides
-whether to retrieve at all, rewrites the query, grades the evidence, retrieves again
-when it is not enough, generates an answer **constrained to the evidence** with
-per-claim citations, verifies that answer, and — when the knowledge base genuinely
-lacks the answer — says so instead of hallucinating.
+Linki is a Python 3.12 knowledge assistant built around LangGraph, local
+FastEmbed embeddings and Qdrant hybrid search. It separates four concerns that
+are often mixed together in RAG projects:
 
-This project is a **fusion of three assets**:
+1. **Answer execution** — choose a bounded P0–P3 path, retrieve evidence, answer
+   with citations, and verify only when risk justifies the cost.
+2. **Long-term memory** — version user-scoped preferences and episodes through a
+   governed state machine; do not inject the whole conversation history.
+3. **Organizational knowledge** — retain immutable source artifacts and
+   bitemporal claims, then build cited Wiki and temporal graph projections.
+4. **Controlled evolution** — turn feedback and failures into a backlog and
+   offline candidates; require test, shadow, canary and rollback gates before
+   production promotion.
 
-| Source | Contributes |
-| --- | --- |
-| [`linki-agent-i`](https://github.com/Linkbreathe) (a multi-agent coding assistant) | The **agentic backbone**: intent routing, tool registry + executor pipeline, provider factory, session, hooks/trace patterns. |
-| [`agentic-rag-for-dummies`](https://github.com/GiovanniPasq/agentic-rag-for-dummies) (upstream, under `project/`) | The **RAG internals**: hierarchical parent/child chunking, embedded Qdrant hybrid search, parent store. |
-| The upgrade design (`docs/superpowers/specs/`) | The **reliability delta**: explicit grader, evidence-cited answering, and a verifier reflow loop. |
+The implementation plan and its open-source architecture references are in
+[`docs/Linki-AgenticRAG二次升级规划.md`](docs/Linki-AgenticRAG二次升级规划.md).
 
-The result lives in `src/linki/` — a self-contained package that reuses the proven
-pieces and adds the reliability layer that makes answers trustworthy.
-
----
+> **Release status:** the adaptive runtime is implemented, but `auto` remains on
+> the legacy path by default because the N=120 quality gate did not pass. Linki
+> still records the local P0–P3 decision as `shadow_policy`. A caller can opt in
+> per request with `--mode fast|balanced|deep`, or an operator can enable
+> `adaptive_enabled` after calibrating against its own corpus.
 
 ## Architecture
 
-The Phase-5 graph (planned, parallel retrieval with verification reflow):
+```text
+Request + tenant/user/ACL + immutable KB snapshot
+                         │
+                  local policy router
+             shadow only │ or enabled/explicit mode
+        ┌────────────────┼──────────────────────────┐
+        │                │              │           │
+       P0               P1             P2          P3
+ local/chat       retrieve + answer   plan once   bounded plan/
+ 0–1 call             1 call         ≤3 calls    grade/verify ≤7
+        └────────────────┴──────────────┴───────────┘
+                         │
+      hybrid candidates (30) ── optional corpus PPR pilot
+                         │
+      local cross-encoder → supporting spans → token-budgeted Evidence Pack
+                         │
+       cited answer + deterministic risk gate + optional verifier/reflow
+                         │
+       answer, evidence offsets, policy reason, cache/snapshot versions,
+              per-node model/token/latency telemetry and trace
 
+Governed side planes
+  Episodes → memory candidates → proposed/review/active/superseded/deleted
+  Sources  → claim versions → approval → Wiki + temporal graph projections
+  Feedback → knowledge gaps → offline candidate → test → shadow → canary
+                                                       └→ promote / rollback
 ```
-router ─chat──▶ chat_responder ─▶ END
-  │  ─clarify─▶ clarify ─▶ END
-  └  ─retrieve▶ rewrite ─▶ planner ─Send×N▶ retrieve(loop) ─▶ answer ─▶ verifier
-                              ▲                                      ├ pass ──▶ final ─▶ END
-                              └──────── retry with issues ───────────┤
-                                                                     └ giveup▶ final_with_warning ─▶ END
 
-retrieve(loop): retrieve ─▶ grade ─(insufficient)▶ refine ↺
-                         └(sufficient / give up)▶ collect
-```
+### Runtime and cost controls
 
-- **router** — chat / retrieve / clarify. On any doubt, prefer retrieve.
-- **rewrite** — resolve pronouns and ellipsis from history into a standalone, retrieval-friendly query.
-- **planner** — produce a minimal `QueryPlan` (1-4 sub-queries), choose each target knowledge-base tool from its description, and fan out independent searches with LangGraph `Send`.
-- **retrieve loop** — hybrid (dense + sparse) search with parent expansion, then a
-  **grader** decides sufficiency; if not enough it **refines** the query and retrieves
-  again (bounded by `max_rounds`), with global de-duplication so each branch/round explores new ground.
-- **answer** — generate **only** from the numbered evidence, marking every claim with `[n]`, and disclosing gaps.
-- **verifier** — check the answer against the evidence claim-by-claim; on failure, send structured issues back to the planner for supplemental retrieval (bounded by `max_attempts`), else degrade transparently with a warning.
+- Local, explainable P0–P3 routing runs before the first model call.
+- Every path has `max_model_calls`, input-token, evidence, round and deadline
+  budgets. Budget exhaustion degrades explicitly instead of looping forever.
+- The primary server entry point is async; identical in-flight requests use
+  single-flight coalescing.
+- Exact answer/retrieval caches are versioned by prompt, model, index, memory,
+  tenant, user and ACL dimensions. Semantic answer caching is off by default.
+- SQLite is the local cache backend; a Redis adapter is available through the
+  `cache` extra. Qdrant can run embedded or against Server/Cloud.
+- `NodeCost` attributes model, prompt version, policy path, provider/estimated
+  token usage and latency to every model call. Traces and cost reports are
+  separate, optional persistence channels.
 
-Embeddings are **local** (`fastembed`, ONNX — no torch, no GPU). Qdrant runs in
-**embedded on-disk mode** — no Docker, no server.
+### Retrieval and evidence integrity
 
----
+- Dense + sparse hybrid search gathers 30 cheap child candidates.
+- `Xenova/ms-marco-MiniLM-L-6-v2` reranks locally through FastEmbed, with an
+  explicit lexical fallback that is surfaced in evidence metadata.
+- The model receives verbatim supporting spans, not silently rewritten text;
+  each span keeps source version, content hash and validated character offsets.
+- Evidence Packs enforce source diversity, sub-query coverage and path-specific
+  token budgets (`1200 / 2400 / 4000`).
+- `GraphRetriever` is an adapter boundary. The included two-hop PPR pilot is
+  corpus-only and remains an expensive experimental path, not a default claim
+  that “graph automatically fixes recall.”
 
-## Reliability features
+### Memory, knowledge and self-evolution boundaries
 
-- **Evidence-constrained generation** — answers are built only from retrieved evidence; the model's own pretraining knowledge is not used to fill gaps.
-- **Per-claim citations** — every claim ends with `[n]`; a Sources panel maps `[n]` back to file · section.
-- **Honest refusal** — when the knowledge base does not cover the question, Linki says "not found in the knowledge base" instead of inventing an answer.
-- **Retrieval grading + self-correction** — weak retrieval is caught before generation, and the query is refined and retried.
-- **Answer verification** — a separate judge model checks the answer against the evidence and can trigger another retrieval pass.
-- **Multi-turn** — conversation history is fed to the router/rewrite so follow-ups like "and how does it compare?" resolve correctly.
+- Explicit user memory can become active; inferred memory starts as a candidate
+  and sensitive content requires review. Edit creates a newer version; forget
+  tombstones content and redacts recoverable episode payloads.
+- Memory is isolated by tenant/user/ACL and injected only after retrieval under
+  a fixed token budget.
+- A model output cannot become organizational fact. Claims require a source
+  artifact, valid source span, schema checks and explicit approval.
+- Claim queries support both valid time and system-known time. Wiki and graph
+  are reproducible projections with staging, atomic promotion and rollback.
+- Feedback mining creates knowledge-gap backlog items, never invented answers.
+  Prompt/policy/index candidates move through immutable evaluation results,
+  deterministic canary buckets and constraint gates.
 
----
+## Benchmark status
+
+The current release was measured on the official MultiHop-RAG corpus: 609
+articles, 2,556 questions and 47,593 vectors. Full reports, exact protocol and
+limitations are in [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).
+
+### Full retrieval, N=2,556
+
+| Variant | Recall | Strict all-support | MRR | Evidence tokens | p95 latency |
+|---|---:|---:|---:|---:|---:|
+| Frozen `legacy_k5` | 0.5858 | 0.2625 | 0.7539 | **744** | **0.672 s** |
+| `rerank_pack` | 0.5994 | 0.2678 | 0.7520 | 1,278 | 1.076 s |
+| `rerank_ppr` | **0.6348** | **0.3038** | **0.7807** | 1,620 | 2.397 s |
+
+PPR improved strict support-chain recall by 4.13 percentage points but raised
+p95 latency by 257% and evidence volume by 118%. It is therefore suitable for a
+selective deep path, not the default fast path.
+
+### Counterbalanced end-to-end evaluation, N=120
+
+Three disjoint 40-question folds contain 30 comparison, inference, temporal and
+null questions each. All four systems use the same main/judge models and corpus
+snapshot; caches and memory are disabled, system order rotates per row, judge
+calls are excluded from system cost, and provider token usage was available for
+100% of measured calls.
+
+| System | Calls | Mean tokens | p50 / p95 latency | Faithfulness | Quality | All-support | Refusal correct |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Fair single pass | **1.00** | **1,654** | **2.40 / 3.08 s** | **4.567** | 3.233 | 0.244 | 0.692 |
+| Legacy full graph | 6.92 | 9,222 | 22.43 / 62.78 s | 4.417 | 3.592 | 0.433 | 0.650 |
+| Adaptive auto | 1.26 | 2,440 | 4.14 / 6.95 s | 4.342 | **4.008** | 0.322 | **0.892** |
+| Adaptive deep | 5.23 | 10,262 | 21.11 / 45.91 s | 4.267 | 3.475 | **0.467** | 0.675 |
+
+Adaptive auto beat the legacy efficiency targets: mean tokens fell 73.5%, p50
+latency fell 81.5%, and calls fell 81.8%. It also improved quality, gold-answer
+containment and refusal correctness. It did **not** pass the strict quality
+floor: paired all-support delta was `-0.111` with 95% CI `[-0.222, 0.000]`,
+well below the allowed `-0.02` floor. On the P1 subset, one-call execution passed
+but faithfulness (`4.271`) was below the fair single-pass value (`4.469`). This
+is why adaptive auto remains shadowed by default.
+
+Known scope limits: MultiHop-RAG does not measure the planned single,
+multi-turn or cross-KB strata; the project memory suite is not a claimed
+LongMemEval/LoCoMo result; embedded Qdrant warns above 20,000 points; retrieval
+stability does not imply answer stability.
 
 ## Install
 
-Requires **Python 3.12+**. [`uv`](https://docs.astral.sh/uv/) recommended.
+Python **3.12+** and [`uv`](https://docs.astral.sh/uv/) are recommended.
 
 ```bash
 git clone https://github.com/Linkbreathe/LinkiRAG-AgenticRAG.git
 cd LinkiRAG-AgenticRAG
 uv venv --python 3.12
-uv pip install -e '.[ui]'          # omit [ui] if you don't need the web interface
+uv pip install -e '.[ui]'
+
+# Optional Redis adapter and evaluation dependencies:
+uv pip install -e '.[ui,cache,eval]'
 ```
 
-Configure your LLM provider in a `.env` file (git-ignored):
+Create a git-ignored `.env`:
 
 ```dotenv
 # DeepSeek
 LINKI_PROVIDER=deepseek
-DEEPSEEK_API_KEY=sk-...
+DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-chat
-LINKI_JUDGE_MODEL=deepseek-reasoner   # judge/verifier; a different model is recommended
+LINKI_JUDGE_PROVIDER=deepseek
+LINKI_JUDGE_MODEL=deepseek-reasoner
 
-# ...or OpenAI
+# Or OpenAI / an OpenAI-compatible gateway:
 # LINKI_PROVIDER=openai
-# OPENAI_API_KEY=sk-...
+# OPENAI_API_KEY=...
 # LINKI_MODEL=gpt-4o-mini
+# LINKI_PROVIDER=gateway
+# LINKI_GATEWAY_BASE_URL=http://localhost:4000/v1
+# LINKI_GATEWAY_API_KEY=...
 ```
 
-Embeddings download automatically on first ingest (small ONNX models).
-
----
+Models for dense, sparse and cross-encoder retrieval download on first use.
 
 ## Usage
 
 ```bash
-# Ingest documents (PDF or Markdown) into a knowledge base
-linki ingest ./docs/fastapi.md --kb default
+# Ingest PDF or Markdown; a new immutable KB snapshot is promoted on success.
+linki ingest ./docs/handbook.md --kb default --tenant acme --acl public
 
-# Ask one question through the full agentic graph
-linki ask "How do I configure TrustedHostMiddleware?" --debug
+# Default auto uses the release-gated legacy path and records shadow_policy.
+linki ask "What is the release policy?" --debug --tenant acme --user alice
 
-# Multi-turn REPL
+# Explicit modes opt in to adaptive execution for this request.
+linki ask "What is the release policy?" --mode fast
+linki ask "Compare policy A and B" --mode balanced
+linki ask "Strictly verify the complete evidence chain" --mode deep
+
+# Multi-turn terminal session and web console.
 linki
-
-# Web UI (TypeScript console: topics, document upload, chat, trace, evidence)
-linki web            # http://127.0.0.1:7860
+linki web  # http://127.0.0.1:7860
 ```
 
-Example (`--debug` shows the routing/retrieval decisions):
+### Governance CLI
 
-```
-[router] retrieve — needs knowledge-base content
-[retrieve] 2 chunk(s); verified=True
-╭─────────────────────────── Linki ───────────────────────────╮
-│ To configure TrustedHostMiddleware, pass allowed_hosts ...[1]│
-│ Uvicorn workers do NOT share memory ...[2]                   │
-│ Sources: [1] fastapi.md · Middleware > TrustedHostMiddleware │
-│          [2] fastapi.md · Server Workers                     │
-╰──────────────────────────────────────────────────────────────╯
+```bash
+# Every command has detailed --help and JSON output where appropriate.
+linki memory --help
+linki memory remember "Use TypeScript examples" --tenant acme --user alice
+linki memory list --tenant acme --user alice
+
+linki knowledge --help   # source-add, claim-propose/approve/reject, query
+linki wiki --help        # list/show/approve cited pages
+linki evolve --help      # feedback, gaps, release gates, canary, rollback
 ```
 
----
+The React/TypeScript console exposes execution mode, tenant/user scope, node
+costs, evidence, memory controls, Wiki pages and feedback. The FastAPI backend
+also provides `/api/chat`, `/api/memory`, `/api/wiki`, `/api/feedback` and
+`/api/gaps` endpoints.
 
 ## Configuration
 
-Copy `linki.yaml.example` to `linki.yaml` to override defaults (chunk sizes,
-retrieval `k`, loop caps, embedding models, and the knowledge-base registry). Model
-provider and API keys live in `.env`, never in yaml.
+Copy [`linki.yaml.example`](linki.yaml.example) to `linki.yaml`. Secrets stay in
+`.env`; YAML contains runtime policy only.
 
-Each knowledge base has a `usage_hint` — this is the only routing signal the planner
-sees (Phase 3), so write it as "what this KB holds / which questions belong here".
+| Setting | Default | Purpose |
+|---|---:|---|
+| `adaptive_enabled` | `false` | Keep auto on legacy while recording shadow policy; explicit modes still opt in. |
+| `candidate_k / rerank_k` | `30 / 8` | Separate high-recall candidates from prompt evidence. |
+| `evidence_budget_*` | `1200/2400/4000` | Fast, balanced and deep Evidence Pack limits. |
+| `graph_retrieval` | `none` | `ppr_pilot` requires an injected graph adapter. |
+| `enable_answer_cache` | `true` | Versioned exact cache for approved stable paths. |
+| `enable_semantic_cache` | `false` | Enable only after corpus-specific false-hit calibration. |
+| `enable_memory` | `true` | Governed recall/formation; tenant/user scoped. |
+| `qdrant_url` | unset | Use Server/Cloud instead of embedded storage. |
 
----
+For the benchmark-sized 47,593-vector index, use Qdrant Server/Cloud for
+capacity testing. Embedded mode remains convenient for local development, not a
+production performance claim.
 
-## Testing
-
-```bash
-uv run pytest            # unit tests: planner fan-out, grade→refine dedup, citations, verifier reflow
-```
-
-The graph and CLI import without the heavy RAG stack (Qdrant/embeddings are lazy),
-so the reliability logic is unit-tested with fakes — no API key or model download needed.
-
-### Reproducible MultiHop-RAG benchmark
-
-Linki includes an adapter for the official MultiHop-RAG corpus (2,556 questions,
-609 news articles). The benchmark index is isolated under `.linki/benchmarks/`
-and uses the same production chunker and hybrid retriever as normal queries.
+## Evaluation
 
 ```bash
-# Download the official questions and full corpus, then build the isolated index.
+# Offline tests use fakes; no provider key is needed.
+uv run pytest -q
+
+# Production frontend type-check and bundle.
+cd src/linki/ui/frontend && npm run build
+
+# Reproduce the public benchmark in an isolated namespace.
 linki bench-prep --benchmark multihop-rag
 linki bench-ingest --benchmark multihop-rag
-
-# Retrieval-only run over all 2,556 questions (no API calls).
-linki bench-retrieval --benchmark multihop-rag
-
-# Stratified end-to-end run with all four official query types.
-# Strict mode compares a fair single-shot baseline, a no-reflow ablation,
-# and the complete agentic workflow while recording latency/calls/tokens.
-linki eval --benchmark multihop-rag --strict --limit 40 --seed 42
+linki bench-retrieval --benchmark multihop-rag --variant all
+linki bench-fair --benchmark multihop-rag --fold-size 40
+linki bench-stability --benchmark multihop-rag --limit 120 --seed 42 --repeats 3
+linki bench-memory
 ```
 
-The baseline has the same model, retriever, evidence-only policy, refusal rule,
-and citation requirement as Linki; only the orchestration differs. Reports include
-retrieval recall/precision, strict all-support recall, answer token F1, gold-answer
-containment, refusal correctness, citation validity, faithfulness, latency, model
-calls, and token usage. Empty retrieval is counted as a failure rather than skipped.
-See [BENCHMARK_RESULTS.md](BENCHMARK_RESULTS.md) for the latest full-corpus and
-end-to-end results, including limitations and cost trade-offs.
+Benchmark commands checkpoint progress and reject checkpoints whose dataset or
+protocol fingerprint differs. Raw answers and retrieved URLs stay under
+`.linki/benchmarks/.../runtime/eval/` and are intentionally ignored by Git.
 
----
+## Project layout
 
-## Project structure
-
-```
+```text
 src/linki/
-├── config.py            Settings + knowledge-base registry (linki.yaml / env)
-├── core/                providers (OpenAI/DeepSeek + judge), session, json utils
-├── ingestion/           loader (PDF/MD) · chunker (parent/child) · indexer (embedded Qdrant + parent store)
-├── tools/               hybrid retrieval → Evidence · tool registry
-├── graph/               state · prompts · evidence(citations) · nodes · subgraph(grade→refine) · workflow
-├── ui/                  FastAPI backend + React/TypeScript web console
-└── cli/app.py           linki ingest / ask / web / REPL
-
-docs/superpowers/specs/  design document
-project/                 upstream agentic-rag-for-dummies reference implementation
-tests/                   unit tests (fakes; no network)
+├── routing/       local P0–P3 policy and deterministic risk gates
+├── retrieval/     candidates, reranker, spans, Evidence Pack and graph protocol
+├── graph/         adaptive/legacy LangGraph workflows and cited answer nodes
+├── cache/         SQLite, Redis protocol and single-flight
+├── memory/        immutable episodes, candidates, policy, consolidation, recall
+├── knowledge/     sources, bitemporal claims, Wiki/graph projections, snapshots
+├── evolution/     feedback, gap mining, candidate gates, canary and rollback
+├── core/          provider factory, RequestContext, telemetry and trace
+├── ingestion/     PDF/Markdown chunking, parent store and Qdrant indexing
+├── eval/          fair E2E, retrieval, memory and stability protocols
+├── ui/            FastAPI backend and bundled React/TypeScript console
+└── cli/           Typer command surface
 ```
 
----
+## Provenance and license
 
-## Roadmap
+Linki combines the agentic patterns of the Linkbreathe `linki-agent-i` work with
+hierarchical RAG ideas adapted from
+[`agentic-rag-for-dummies`](https://github.com/GiovanniPasq/agentic-rag-for-dummies).
+The current adaptive, governance and evaluation layers live in this repository.
 
-- ✅ **Phase 0–5** — package scaffold, hierarchical hybrid ingestion/retrieval, router/rewrite/clarify, planner fan-out with LangGraph `Send`, graded refine loops, evidence-only answers, citations, and verifier reflow.
-- ✅ **Phase 6** — pre/post-retrieve hooks, persistent trace/timeline, and fair naive-vs-agentic evaluation.
-- ✅ **Benchmark hardening** — official MultiHop-RAG adapter, full-corpus indexing, strict retrieval metrics, no-reflow ablation, and cost/latency telemetry.
-
----
-
-## Credits
-
-- RAG internals adapted from **[agentic-rag-for-dummies](https://github.com/GiovanniPasq/agentic-rag-for-dummies)** by Giovanni Pasqualino.
-- Agentic backbone and design patterns from the **linki-agent-i** project.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+MIT — see [`LICENSE`](LICENSE).

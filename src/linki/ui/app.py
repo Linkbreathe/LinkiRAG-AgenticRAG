@@ -276,6 +276,12 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
                 policy.get("reason", ""),
             )
         ]
+        shadow_policy = state.get("shadow_policy") or {}
+        if shadow_policy:
+            trace.append(trace_step(
+                "shadow", "Shadow policy", shadow_policy.get("path", "unknown"),
+                shadow_policy.get("reason", ""), policy=shadow_policy,
+            ))
         sub_queries = state.get("sub_queries") or []
         if sub_queries:
             trace.append(trace_step(
@@ -329,6 +335,7 @@ def build_app(settings: Settings, model: Any, judge: Any, retrieve_fn: Any):
             "run_id": state.get("run_id"),
             "policy": policy,
             "policy_path": state.get("policy_path"),
+            "shadow_policy": shadow_policy or None,
             "cost": cost,
             "cache": state.get("cache") or {},
             "snapshots": state.get("snapshots") or {},

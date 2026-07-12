@@ -98,6 +98,7 @@ class LinkiGraphState(TypedDict, total=False):
 
     # —— local adaptive policy / budgets ——
     policy: dict[str, Any]
+    shadow_policy: dict[str, Any]
     policy_path: str  # legacy | p0 | p1 | p2 | p3
     policy_escalated: bool
     policy_replanned: bool
