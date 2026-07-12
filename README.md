@@ -1,50 +1,126 @@
 <p align="center">
-  <img alt="Linki logo" src="assets/logo.png" width="320px">
+  <img alt="Linki — Adaptive Agentic RAG" src="assets/README.png" width="760px">
 </p>
 
 <h1 align="center">Linki · Adaptive Agentic RAG</h1>
 
 <p align="center">
-  <strong>Evidence-grounded answers, governed memory and knowledge, and a release-gated path to self-evolution.</strong>
+  <strong>An evidence-grounded RAG assistant that spends compute only when a question needs it — and an honest, benchmark-backed study of when that actually pays off.</strong>
 </p>
 
 <p align="center">
-  <a href="#what-linki-is">Overview</a> •
-  <a href="#architecture">Architecture</a> •
-  <a href="#benchmark-status">Benchmarks</a> •
-  <a href="#install">Install</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#evaluation">Evaluation</a>
+  <a href="#overview">Overview</a> •
+  <a href="#what-linki-explores">What it explores</a> •
+  <a href="#what-is-implemented">What is implemented</a> •
+  <a href="#experiments-and-results">Experiments & results</a> •
+  <a href="#getting-started">Getting started</a> •
+  <a href="#reproduce-the-benchmarks">Reproduce</a>
 </p>
 
 ---
 
-## What Linki is
+## Overview
 
-Linki is a Python 3.12 knowledge assistant built around LangGraph, local
-FastEmbed embeddings and Qdrant hybrid search. It separates four concerns that
-are often mixed together in RAG projects:
+Linki is a Python 3.12 knowledge assistant built on LangGraph, local FastEmbed
+embeddings and Qdrant hybrid search. It answers questions with verbatim,
+citation-checked evidence, and routes each request through a bounded **P0–P3**
+policy so that cheap questions stay cheap and only genuinely hard ones pay for
+planning and verification. Around that core it adds three governed side planes —
+long-term memory, organizational knowledge, and a release-gated self-evolution
+loop — so that user preferences, facts and model changes can only enter
+production through explicit, auditable gates.
 
-1. **Answer execution** — choose a bounded P0–P3 path, retrieve evidence, answer
-   with citations, and verify only when risk justifies the cost.
-2. **Long-term memory** — version user-scoped preferences and episodes through a
-   governed state machine; do not inject the whole conversation history.
-3. **Organizational knowledge** — retain immutable source artifacts and
-   bitemporal claims, then build cited Wiki and temporal graph projections.
-4. **Controlled evolution** — turn feedback and failures into a backlog and
-   offline candidates; require test, shadow, canary and rollback gates before
-   production promotion.
+Just as important as the code is the **measurement**: Linki was benchmarked
+against the official MultiHop-RAG corpus (609 articles, 2,556 questions, 47,593
+vectors), and the results are reported here in full — including the parts where
+the adaptive path did **not** clear its own quality bar. This README describes
+both what was built and what the experiments actually showed.
 
-The implementation plan and its open-source architecture references are in
-[`docs/Linki-AgenticRAG二次升级规划.md`](docs/Linki-AgenticRAG二次升级规划.md).
+---
 
-> **Release status:** the adaptive runtime is implemented, but `auto` remains on
-> the legacy path by default because the N=120 quality gate did not pass. Linki
-> still records the local P0–P3 decision as `shadow_policy`. A caller can opt in
-> per request with `--mode fast|balanced|deep`, or an operator can enable
-> `adaptive_enabled` after calibrating against its own corpus.
+## What Linki explores
 
-## Architecture
+The project is an attempt to answer a few concrete questions that most RAG demos
+skip over:
+
+1. **Can adaptive routing cut cost without losing quality?** A full agentic
+   graph (plan → retrieve → grade → verify → reflow) gives good answers but is
+   expensive. Can a cheap, local policy decide *per request* how much work to do,
+   and recover most of the quality at a fraction of the tokens and latency?
+2. **Does graph-based retrieval actually fix multi-hop recall?** Personalized
+   PageRank over an entity↔document graph is often claimed to solve multi-hop
+   questions. Does it, measurably, and at what cost?
+3. **Does deterministic retrieval imply deterministic answers?** If the retriever
+   returns the exact same evidence every time, are the model's *claims* also
+   stable?
+4. **Can memory, knowledge and self-evolution be governed instead of trusted?**
+   Can a system version user memory, refuse to promote a model output to "fact,"
+   and gate its own prompt/policy changes behind test → shadow → canary →
+   rollback — rather than mutating state freely?
+
+Every one of these is treated as a hypothesis with a pass/fail experiment, not a
+marketing claim.
+
+---
+
+## What is implemented
+
+Linki separates four concerns that RAG projects usually blur together.
+
+### 1. Adaptive answer execution (P0–P3)
+
+- A **local, explainable policy router** picks a bounded path *before* the first
+  model call: **P0** local/chat (0–1 call) · **P1** retrieve + answer (1 call) ·
+  **P2** plan once (≤3 calls) · **P3** bounded plan / grade / verify (≤7 calls).
+- Every path carries `max_model_calls`, input-token, evidence, round and deadline
+  budgets. Budget exhaustion degrades *explicitly* instead of looping forever.
+- A deterministic risk gate decides whether the (expensive) verifier/reflow step
+  is worth running, instead of always running it.
+- `NodeCost` attributes model, prompt version, policy path, provider/estimated
+  tokens and latency to **every** model call, with optional trace and cost
+  persistence.
+
+### 2. Retrieval and evidence integrity
+
+- Dense + sparse **hybrid search** gathers 30 cheap child candidates
+  (`BAAI/bge-small-en-v1.5` + `Qdrant/bm25`).
+- A local cross-encoder (`Xenova/ms-marco-MiniLM-L-6-v2`, via FastEmbed) reranks,
+  with an explicit lexical fallback that is surfaced in evidence metadata.
+- The model receives **verbatim supporting spans** — never silently rewritten
+  text — each keeping source version, content hash and validated character
+  offsets (100% offset validity across the 2,556-question run).
+- **Evidence Packs** enforce source diversity, sub-query coverage and
+  path-specific token budgets (`1200 / 2400 / 4000`).
+- `GraphRetriever` is an adapter boundary; a two-hop corpus PPR pilot plugs in as
+  an experimental deep-path option (see the results below).
+
+### 3. Governed memory & organizational knowledge
+
+- Explicit user memory can become active; inferred memory starts as a candidate,
+  and sensitive content requires review. Edit creates a new version; forget
+  tombstones content and redacts recoverable episode payloads. Memory is isolated
+  by tenant/user/ACL and injected only after retrieval, under a fixed budget.
+- A **model output cannot become organizational fact.** Claims require a source
+  artifact, a valid source span, schema checks and explicit approval. Claims are
+  bitemporal (valid time + system-known time); Wiki and graph views are
+  reproducible projections with staging, atomic promotion and rollback.
+
+### 4. Release-gated self-evolution
+
+- Feedback and failures become a **knowledge-gap backlog** — never invented
+  answers. Prompt/policy/index candidates move through immutable evaluation
+  results, deterministic canary buckets and constraint gates before promotion,
+  with rollback available at every step.
+
+### Runtime & cost controls
+
+Async server entry point with single-flight coalescing for identical in-flight
+requests; versioned exact answer/retrieval caches keyed by prompt, model, index,
+memory, tenant, user and ACL (semantic answer caching **off** by default); SQLite
+local cache backend with an optional Redis adapter; Qdrant embedded or
+Server/Cloud.
+
+### Architecture
 
 ```text
 Request + tenant/user/ACL + immutable KB snapshot
@@ -52,10 +128,9 @@ Request + tenant/user/ACL + immutable KB snapshot
                   local policy router
              shadow only │ or enabled/explicit mode
         ┌────────────────┼──────────────────────────┐
-        │                │              │           │
-       P0               P1             P2          P3
- local/chat       retrieve + answer   plan once   bounded plan/
- 0–1 call             1 call         ≤3 calls    grade/verify ≤7
+       P0               P1             P2           P3
+ local/chat       retrieve+answer   plan once   bounded plan/
+ 0–1 call             1 call        ≤3 calls    grade/verify ≤7
         └────────────────┴──────────────┴───────────┘
                          │
       hybrid candidates (30) ── optional corpus PPR pilot
@@ -74,56 +149,25 @@ Governed side planes
                                                        └→ promote / rollback
 ```
 
-### Runtime and cost controls
+---
 
-- Local, explainable P0–P3 routing runs before the first model call.
-- Every path has `max_model_calls`, input-token, evidence, round and deadline
-  budgets. Budget exhaustion degrades explicitly instead of looping forever.
-- The primary server entry point is async; identical in-flight requests use
-  single-flight coalescing.
-- Exact answer/retrieval caches are versioned by prompt, model, index, memory,
-  tenant, user and ACL dimensions. Semantic answer caching is off by default.
-- SQLite is the local cache backend; a Redis adapter is available through the
-  `cache` extra. Qdrant can run embedded or against Server/Cloud.
-- `NodeCost` attributes model, prompt version, policy path, provider/estimated
-  token usage and latency to every model call. Traces and cost reports are
-  separate, optional persistence channels.
+## Experiments and results
 
-### Retrieval and evidence integrity
+All numbers below come from a single reproducible run on the official
+[MultiHop-RAG](https://github.com/yixuantt/MultiHop-RAG) corpus: **609 articles,
+2,556 questions** (2,255 answerable + 301 null), **10,398 parent chunks / 47,593
+child vectors**, serial execution on one machine with embedded Qdrant and the
+reranker score cache disabled. Full protocol, per-type breakdowns and limitations
+are in [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).
 
-- Dense + sparse hybrid search gathers 30 cheap child candidates.
-- `Xenova/ms-marco-MiniLM-L-6-v2` reranks locally through FastEmbed, with an
-  explicit lexical fallback that is surfaced in evidence metadata.
-- The model receives verbatim supporting spans, not silently rewritten text;
-  each span keeps source version, content hash and validated character offsets.
-- Evidence Packs enforce source diversity, sub-query coverage and path-specific
-  token budgets (`1200 / 2400 / 4000`).
-- `GraphRetriever` is an adapter boundary. The included two-hop PPR pilot is
-  corpus-only and remains an expensive experimental path, not a default claim
-  that “graph automatically fixes recall.”
+> **TL;DR:** Adaptive routing recovered most of the full graph's quality at
+> ~1/4 of the tokens and ~1/5 of the latency — but it did **not** clear the strict
+> evidence-chain quality floor, so `auto` ships on the legacy path by default and
+> only *shadows* the adaptive decision. Graph PPR really does improve multi-hop
+> recall, but at 2.5× the latency, so it stays a deep-path option. Deterministic
+> retrieval did **not** produce deterministic answers.
 
-### Memory, knowledge and self-evolution boundaries
-
-- Explicit user memory can become active; inferred memory starts as a candidate
-  and sensitive content requires review. Edit creates a newer version; forget
-  tombstones content and redacts recoverable episode payloads.
-- Memory is isolated by tenant/user/ACL and injected only after retrieval under
-  a fixed token budget.
-- A model output cannot become organizational fact. Claims require a source
-  artifact, valid source span, schema checks and explicit approval.
-- Claim queries support both valid time and system-known time. Wiki and graph
-  are reproducible projections with staging, atomic promotion and rollback.
-- Feedback mining creates knowledge-gap backlog items, never invented answers.
-  Prompt/policy/index candidates move through immutable evaluation results,
-  deterministic canary buckets and constraint gates.
-
-## Benchmark status
-
-The current release was measured on the official MultiHop-RAG corpus: 609
-articles, 2,556 questions and 47,593 vectors. Full reports, exact protocol and
-limitations are in [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).
-
-### Full retrieval, N=2,556
+### Experiment 1 — Retrieval: does reranking / graph PPR improve recall? (N=2,556)
 
 | Variant | Recall | Strict all-support | MRR | Evidence tokens | p95 latency |
 |---|---:|---:|---:|---:|---:|
@@ -131,17 +175,21 @@ limitations are in [`BENCHMARK_RESULTS.md`](BENCHMARK_RESULTS.md).
 | `rerank_pack` | 0.5994 | 0.2678 | 0.7520 | 1,278 | 1.076 s |
 | `rerank_ppr` | **0.6348** | **0.3038** | **0.7807** | 1,620 | 2.397 s |
 
-PPR improved strict support-chain recall by 4.13 percentage points but raised
-p95 latency by 257% and evidence volume by 118%. It is therefore suitable for a
-selective deep path, not the default fast path.
+**Result.** Plain reranking barely moved recall (+1.36 pts) for +72% evidence and
++60% p95. Two-hop corpus PPR gained **+4.90 pts recall and +4.13 pts strict
+all-support recall**, but cost **+257% p95 latency and +118% evidence volume**.
+Even so, inference-type questions retrieved the *complete* support chain only
+14.34% of the time — so graph retrieval helps, but has **not** "solved" multi-hop
+inference. PPR is therefore an option for a selective deep path, not the default.
 
-### Counterbalanced end-to-end evaluation, N=120
+### Experiment 2 — End-to-end: can adaptive routing replace the full graph? (N=120)
 
-Three disjoint 40-question folds contain 30 comparison, inference, temporal and
-null questions each. All four systems use the same main/judge models and corpus
-snapshot; caches and memory are disabled, system order rotates per row, judge
-calls are excluded from system cost, and provider token usage was available for
-100% of measured calls.
+Four systems on three disjoint 40-question folds (seeds `42 / 123 / 2026`; 30
+comparison / inference / temporal / null each). Same main model
+(`deepseek-chat`) and judge (`deepseek-reasoner`), temperature 0, caches and
+memory off, per-row system order rotated to cancel warm/provider-order effects,
+judge calls excluded from system cost, provider token usage available for 100% of
+480 system calls.
 
 | System | Calls | Mean tokens | p50 / p95 latency | Faithfulness | Quality | All-support | Refusal correct |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -150,24 +198,68 @@ calls are excluded from system cost, and provider token usage was available for
 | Adaptive auto | 1.26 | 2,440 | 4.14 / 6.95 s | 4.342 | **4.008** | 0.322 | **0.892** |
 | Adaptive deep | 5.23 | 10,262 | 21.11 / 45.91 s | 4.267 | 3.475 | **0.467** | 0.675 |
 
-Adaptive auto beat the legacy efficiency targets: mean tokens fell 73.5%, p50
-latency fell 81.5%, and calls fell 81.8%. It also improved quality, gold-answer
-containment and refusal correctness. It did **not** pass the strict quality
-floor: paired all-support delta was `-0.111` with 95% CI `[-0.222, 0.000]`,
-well below the allowed `-0.02` floor. On the P1 subset, one-call execution passed
-but faithfulness (`4.271`) was below the fair single-pass value (`4.469`). This
-is why adaptive auto remains shadowed by default.
+**Result.** Against the same-row legacy graph, **adaptive auto** cut mean tokens
+by **73.5%**, p50 latency by **81.5%** and model calls by **81.8%**, while
+*improving* answer quality (+0.417), gold-answer containment (+0.100) and refusal
+correctness (+0.242). The trade was strict evidence coverage: all-support recall
+fell by 0.111.
 
-Stability was also measured separately over 120 questions × 3 runs. Retrieval
-top-k Jaccard was `1.0`, but answer-claim Jaccard was only `0.6928`, so stable
-retrieval does not imply stable answer claims (57/120 questions were exactly
-stable). Known scope limits remain:
-MultiHop-RAG does not measure the planned single, multi-turn or cross-KB strata;
-the project memory suite is not a claimed LongMemEval/LoCoMo result; embedded
-Qdrant warns above 20,000 points; sentence-level lexical claim Jaccard is not an
-entailment metric.
+### The release-gate verdict — why `auto` stays on the legacy path
 
-## Install
+The upgrade plan defined pass/fail gates in advance. Adaptive auto was measured
+against them honestly:
+
+| Gate | Result | Decision |
+|---|---|---|
+| Mean tokens ≥ 40% below full | −73.5% | **Pass** |
+| p50 latency ≥ 35% below full | −81.5% | **Pass** |
+| P1 median model calls ≤ 1 | 1 call over 96 P1 rows | **Pass** |
+| Refusal-correct CI not below legacy −2 pts | +15.8 pts | **Pass** |
+| All-support CI not below legacy −2 pts | −22.2 pts | **Fail** |
+| P1 faithfulness ≥ fair single pass | 4.271 vs 4.469 | **Fail** |
+
+Because two gates failed, **adaptive auto remains shadowed by default**: in
+`auto`, Linki runs the legacy graph and *records* the P0–P3 choice as
+`shadow_policy`, so the routing can be evaluated on live traffic without risking
+answer quality. Callers can opt in per request with `--mode fast|balanced|deep`,
+and operators can flip `adaptive_enabled` after calibrating on their own corpus.
+Adaptive **deep** raised strict recall by 3.33 paired points, but its CI crossed
+zero and it used 11.3% more tokens than legacy, so it stays an explicit
+high-effort option too. This is the intended outcome of a gated design — the
+faster path does not ship until it earns it.
+
+### Experiment 3 — Stability: does stable retrieval mean stable answers?
+
+Measured over 120 stratified questions × 3 runs at temperature 0:
+
+- **Retrieval is deterministic:** top-k Jaccard `1.0`, exact-ranking rate `1.0`,
+  error rate `0.0`.
+- **Answers are not:** answer-claim Jaccard was only **`0.6928`** — just
+  **57 / 120** questions were exactly stable, one scored zero. So identical
+  evidence still yields drifting claims; deterministic retrieval does **not**
+  imply deterministic answers.
+
+### Governed-memory regression suite
+
+A deterministic project-owned suite (not a claimed LongMemEval/LoCoMo score):
+5/5 status decisions correct; write precision/recall, update correctness and
+deletion completeness all `1.0`; stale-recall rate `0.0`.
+
+### Honest limitations
+
+- MultiHop-RAG covers comparison / inference / temporal / null queries only — not
+  the planned single, multi-turn or cross-KB strata.
+- Embedded Qdrant warns above ~20,000 points; these latencies are **not** a
+  server-profile capacity claim. Use Qdrant Server/Cloud for the 47,593-vector
+  index.
+- Answer-claim Jaccard is lexical sentence overlap, **not** a claim-entailment
+  metric; semantic paraphrases are scored as differences.
+- Citation *index validity* only proves `[n]` points to a retrieved item, not
+  that the claim is entailed by it.
+
+---
+
+## Getting started
 
 Python **3.12+** and [`uv`](https://docs.astral.sh/uv/) are recommended.
 
@@ -200,15 +292,15 @@ LINKI_JUDGE_MODEL=deepseek-reasoner
 # LINKI_GATEWAY_API_KEY=...
 ```
 
-Models for dense, sparse and cross-encoder retrieval download on first use.
+Dense, sparse and cross-encoder models download on first use.
 
-## Usage
+### Ask a question
 
 ```bash
 # Ingest PDF or Markdown; a new immutable KB snapshot is promoted on success.
 linki ingest ./docs/handbook.md --kb default --tenant acme --acl public
 
-# Default auto uses the release-gated legacy path and records shadow_policy.
+# Default auto = release-gated legacy path + recorded shadow_policy.
 linki ask "What is the release policy?" --debug --tenant acme --user alice
 
 # Explicit modes opt in to adaptive execution for this request.
@@ -216,59 +308,56 @@ linki ask "What is the release policy?" --mode fast
 linki ask "Compare policy A and B" --mode balanced
 linki ask "Strictly verify the complete evidence chain" --mode deep
 
-# Multi-turn terminal session and web console.
+# Multi-turn terminal session, and the web console.
 linki
-linki web  # http://127.0.0.1:7860
+linki web   # http://127.0.0.1:7860
 ```
 
 ### Governance CLI
 
 ```bash
 # Every command has detailed --help and JSON output where appropriate.
-linki memory --help
 linki memory remember "Use TypeScript examples" --tenant acme --user alice
 linki memory list --tenant acme --user alice
 
-linki knowledge --help   # source-add, claim-propose/approve/reject, query
-linki wiki --help        # list/show/approve cited pages
+linki knowledge --help   # source-add, claim-propose/approve/reject, query, publish
+linki wiki --help        # list / show / approve cited pages
 linki evolve --help      # feedback, gaps, release gates, canary, rollback
 ```
 
-The React/TypeScript console exposes execution mode, tenant/user scope, node
-costs, evidence, memory controls, Wiki pages and feedback. The FastAPI backend
-also provides `/api/chat`, `/api/memory`, `/api/wiki`, `/api/feedback` and
-`/api/gaps` endpoints.
+The bundled React/TypeScript console exposes execution mode, tenant/user scope,
+node costs, evidence, memory controls, Wiki pages and feedback. The FastAPI
+backend also serves `/api/chat`, `/api/memory`, `/api/wiki`, `/api/feedback` and
+`/api/gaps`.
 
-## Configuration
+### Configuration
 
 Copy [`linki.yaml.example`](linki.yaml.example) to `linki.yaml`. Secrets stay in
-`.env`; YAML contains runtime policy only.
+`.env`; YAML holds runtime policy only.
 
 | Setting | Default | Purpose |
 |---|---:|---|
-| `adaptive_enabled` | `false` | Keep auto on legacy while recording shadow policy; explicit modes still opt in. |
+| `adaptive_enabled` | `false` | Keep `auto` on legacy while recording shadow policy; explicit modes still opt in. |
 | `candidate_k / rerank_k` | `30 / 8` | Separate high-recall candidates from prompt evidence. |
-| `evidence_budget_*` | `1200/2400/4000` | Fast, balanced and deep Evidence Pack limits. |
+| `evidence_budget_*` | `1200/2400/4000` | Fast / balanced / deep Evidence Pack limits. |
 | `graph_retrieval` | `none` | `ppr_pilot` requires an injected graph adapter. |
 | `enable_answer_cache` | `true` | Versioned exact cache for approved stable paths. |
 | `enable_semantic_cache` | `false` | Enable only after corpus-specific false-hit calibration. |
 | `enable_memory` | `true` | Governed recall/formation; tenant/user scoped. |
 | `qdrant_url` | unset | Use Server/Cloud instead of embedded storage. |
 
-For the benchmark-sized 47,593-vector index, use Qdrant Server/Cloud for
-capacity testing. Embedded mode remains convenient for local development, not a
-production performance claim.
+---
 
-## Evaluation
+## Reproduce the benchmarks
 
 ```bash
-# Offline tests use fakes; no provider key is needed.
+# Offline unit tests use fakes; no provider key needed.
 uv run pytest -q
 
-# Production frontend type-check and bundle.
+# Frontend type-check and bundle.
 cd src/linki/ui/frontend && npm run build
 
-# Reproduce the public benchmark in an isolated namespace.
+# MultiHop-RAG, in an isolated namespace.
 linki bench-prep --benchmark multihop-rag
 linki bench-ingest --benchmark multihop-rag
 linki bench-retrieval --benchmark multihop-rag --variant all
@@ -280,7 +369,9 @@ linki bench-memory
 
 Benchmark commands checkpoint progress and reject checkpoints whose dataset or
 protocol fingerprint differs. Raw answers and retrieved URLs stay under
-`.linki/benchmarks/.../runtime/eval/` and are intentionally ignored by Git.
+`.linki/benchmarks/.../runtime/eval/` and are intentionally git-ignored.
+
+---
 
 ## Project layout
 
@@ -300,11 +391,14 @@ src/linki/
 └── cli/           Typer command surface
 ```
 
+The full implementation plan and its open-source references are in
+[`docs/Linki-AgenticRAG二次升级规划.md`](docs/Linki-AgenticRAG二次升级规划.md).
+
 ## Provenance and license
 
 Linki combines the agentic patterns of the Linkbreathe `linki-agent-i` work with
 hierarchical RAG ideas adapted from
 [`agentic-rag-for-dummies`](https://github.com/GiovanniPasq/agentic-rag-for-dummies).
-The current adaptive, governance and evaluation layers live in this repository.
+The adaptive routing, governance and evaluation layers live in this repository.
 
 MIT — see [`LICENSE`](LICENSE).
