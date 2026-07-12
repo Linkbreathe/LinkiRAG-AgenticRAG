@@ -26,5 +26,6 @@ def test_stability_eval_repeats_and_reports_jaccard_variance_and_errors():
     assert report["aggregate"]["topk_exact_match_rate"] == 1.0
     assert report["aggregate"]["answer_claim_jaccard"] == 1.0
     assert report["aggregate"]["error_rate"] == 0.0
+    assert report["items"][0]["question_type"] == "unknown"
     assert jaccard(set(), set()) == 1.0
     assert answer_claims("One useful claim [1].") == {"one useful claim ."}

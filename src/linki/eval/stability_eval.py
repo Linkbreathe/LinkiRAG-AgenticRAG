@@ -69,6 +69,7 @@ def run_stability_eval(
         ] if answers else []
         items.append({
             "id": row.get("id"),
+            "question_type": row.get("question_type", row.get("type", "unknown")),
             "topk_jaccard": statistics.fmean(topk_scores),
             "topk_exact_match": float(all(ranking == rankings[0] for ranking in rankings[1:])),
             "answer_claim_jaccard": statistics.fmean(claim_scores) if claim_scores else None,

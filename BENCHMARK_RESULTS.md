@@ -120,8 +120,12 @@ more tokens than legacy. It remains an explicit high-risk/deep option.
 - Retrieval stability: 120 stratified questions × 3 runs, score cache off;
   top-k Jaccard `1.0`, exact-ranking rate `1.0`, error rate `0.0`, p50 `0.935 s`,
   p95 `1.095 s`, mean latency variance `0.00094`.
-- Answer-claim Jaccard was not measured in that run and is stored as `null`,
-  rather than being inferred from retrieval stability.
+- Answer stability was measured in a separate 120 × 3 temperature-zero run:
+  top-k Jaccard `1.0`, answer-claim Jaccard `0.6928`, error rate `0.0`, combined
+  retrieval+answer p50 `2.085 s`, p95 `2.860 s`, mean latency variance `0.01989`.
+  Median claim Jaccard was `0.7333`; 57/120 questions were exactly stable and
+  one scored zero. Deterministic retrieval therefore does not imply
+  deterministic answer claims.
 - Project-owned memory governance suite: 5/5 status decisions correct; write
   precision/recall, update correctness and deletion completeness `1.0`; stale
   recall rate `0.0`. This is a deterministic regression suite, **not** a claimed
@@ -154,14 +158,16 @@ intervals from N=3 are too wide for release decisions.
    every item avoided lexical fallback. The evaluator now persists this field.
 3. Embedded Qdrant warns that local mode is not recommended above 20,000 points.
    These latency values must not be presented as server-profile capacity.
-4. Retrieval stability does not establish answer stability; the answer run is a
-   separate, optional protocol because it incurs three model calls per question.
+4. Answer claims are extracted by citation-stripped sentence segmentation and
+   compared with lexical Jaccard. The score does not recognize semantically
+   equivalent paraphrases and is not a claim-entailment metric.
 
 ### Reproduction of the adaptive checkpoint
 
 ```bash
 linki bench-retrieval --benchmark multihop-rag --variant all
 linki bench-stability --benchmark multihop-rag --limit 120 --seed 42 --repeats 3
+linki bench-stability --benchmark multihop-rag --limit 120 --seed 42 --repeats 3 --with-answers
 linki bench-memory
 linki bench-fair --benchmark multihop-rag --fold-size 40
 ```

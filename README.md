@@ -158,10 +158,14 @@ well below the allowed `-0.02` floor. On the P1 subset, one-call execution passe
 but faithfulness (`4.271`) was below the fair single-pass value (`4.469`). This
 is why adaptive auto remains shadowed by default.
 
-Known scope limits: MultiHop-RAG does not measure the planned single,
-multi-turn or cross-KB strata; the project memory suite is not a claimed
-LongMemEval/LoCoMo result; embedded Qdrant warns above 20,000 points; retrieval
-stability does not imply answer stability.
+Stability was also measured separately over 120 questions × 3 runs. Retrieval
+top-k Jaccard was `1.0`, but answer-claim Jaccard was only `0.6928`, so stable
+retrieval does not imply stable answer claims (57/120 questions were exactly
+stable). Known scope limits remain:
+MultiHop-RAG does not measure the planned single, multi-turn or cross-KB strata;
+the project memory suite is not a claimed LongMemEval/LoCoMo result; embedded
+Qdrant warns above 20,000 points; sentence-level lexical claim Jaccard is not an
+entailment metric.
 
 ## Install
 
@@ -270,6 +274,7 @@ linki bench-ingest --benchmark multihop-rag
 linki bench-retrieval --benchmark multihop-rag --variant all
 linki bench-fair --benchmark multihop-rag --fold-size 40
 linki bench-stability --benchmark multihop-rag --limit 120 --seed 42 --repeats 3
+linki bench-stability --benchmark multihop-rag --limit 120 --seed 42 --repeats 3 --with-answers
 linki bench-memory
 ```
 
