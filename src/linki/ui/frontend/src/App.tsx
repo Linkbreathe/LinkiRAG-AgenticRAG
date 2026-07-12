@@ -2,12 +2,14 @@ import * as Select from "@radix-ui/react-select";
 import * as Tabs from "@radix-ui/react-tabs";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowRight,
   Bot,
   BookOpen,
   Brain,
   Check,
+  CheckCircle2,
   ChevronDown,
   Clock3,
   Compass,
@@ -15,16 +17,20 @@ import {
   Database,
   FileUp,
   GitBranch,
+  Info,
+  Library,
   Loader2,
   MessageSquare,
   Plus,
   RefreshCw,
-  Search,
+  SendHorizontal,
+  Settings2,
   ShieldAlert,
   ThumbsDown,
   ThumbsUp,
   Trash2,
-  Upload
+  Upload,
+  X
 } from "lucide-react";
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -39,6 +45,14 @@ import {
   uploadDocuments
 } from "./api";
 import type { ChatMessage, ChatResponse, ExecutionMode, MemoryItem, Topic, TraceStep, WikiPage } from "./types";
+
+type NoticeTone = "success" | "error" | "info";
+type NoticeState = { message: string; tone: NoticeTone } | null;
+type PendingAction = "refresh" | "create" | "upload" | "clear" | "chat" | "memory" | null;
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
 
 function formatCount(value: number, singular: string, plural = `${singular}s`) {
   return `${value} ${value === 1 ? singular : plural}`;
@@ -163,6 +177,45 @@ function IconTip({ label, children }: { label: string; children: ReactNode }) {
         </Tooltip.Content>
       </Tooltip.Portal>
     </Tooltip.Root>
+  );
+}
+
+function NoticeBanner({ notice, onClose }: { notice: Exclude<NoticeState, null>; onClose: () => void }) {
+  const NoticeIcon = notice.tone === "success" ? CheckCircle2 : notice.tone === "error" ? AlertCircle : Info;
+
+  return (
+    <div className={`notice ${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>
+      <NoticeIcon size={18} aria-hidden="true" />
+      <span>{notice.message}</span>
+      <button type="button" onClick={onClose} aria-label="Dismiss notification">
+        <X size={16} />
+      </button>
+    </div>
+  );
+}
+
+function InspectorSection({
+  title,
+  description,
+  children,
+  defaultOpen = false
+}: {
+  title: string;
+  description: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+}) {
+  return (
+    <details className="inspector-section" open={defaultOpen || undefined}>
+      <summary>
+        <span>
+          <strong>{title}</strong>
+          <small>{description}</small>
+        </span>
+        <ChevronDown size={16} aria-hidden="true" />
+      </summary>
+      <div className="inspector-section-body">{children}</div>
+    </details>
   );
 }
 
@@ -357,6 +410,23 @@ function EvidencePanel({ result }: { result: ChatResponse | null }) {
   );
 }
 
+function SourcesPanel({ result }: { result: ChatResponse | null }) {
+  if (!result?.citations.length) {
+    return <div className="empty">No citations yet. Sources appear after an answer is generated.</div>;
+  }
+
+  return (
+    <div className="source-list">
+      {result.citations.map((source) => (
+        <div className="source-item" key={`${source.index}-${source.chunk_id}`}>
+          <code>[{source.index}]</code>
+          <span>{source.label}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MemoryPanel({
   items,
   busy,
@@ -461,10 +531,10 @@ function TopicContext({
       <div className="context-strip empty-context">
         <div>
           <strong>No active topic</strong>
-          <span>Create or select a vector collection before running RAG.</span>
+          <span>Create a knowledge topic and add source documents before asking.</span>
         </div>
         <button type="button" className="button secondary" onClick={onManage}>
-          Vector Database
+          Open Knowledge
           <ArrowRight size={15} />
         </button>
       </div>
@@ -477,7 +547,7 @@ function TopicContext({
         <Compass size={16} />
         <div>
           <strong>{topic.title}</strong>
-          <span>Active RAG topic</span>
+          <span>Active knowledge topic</span>
         </div>
       </div>
       <div className="context-grid">
@@ -499,7 +569,7 @@ function TopicContext({
 }
 
 export function App() {
-  const [activeView, setActiveView] = useState("vector");
+  const [activeView, setActiveView] = useState("rag");
   const [topics, setTopics] = useState<Topic[]>([]);
   const [uploadTopic, setUploadTopic] = useState("default");
   const [searchTopic, setSearchTopic] = useState("default");
@@ -512,14 +582,18 @@ export function App() {
   const [input, setInput] = useState("");
   const [selectedFiles, setSelectedFiles] = useState("No files selected");
   const [lastResult, setLastResult] = useState<ChatResponse | null>(null);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<NoticeState>(null);
   const [clearArmed, setClearArmed] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [createTopicOpen, setCreateTopicOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [memoryItems, setMemoryItems] = useState<MemoryItem[]>([]);
   const [wikiPages, setWikiPages] = useState<WikiPage[]>([]);
   const [wikiSnapshot, setWikiSnapshot] = useState<string | null>(null);
   const [feedbackSent, setFeedbackSent] = useState<"up" | "down" | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  const busy = pendingAction !== null;
+  const chatBusy = pendingAction === "chat";
 
   const currentUploadTopic = useMemo(
     () => topics.find((topic) => topic.name === uploadTopic) ?? topics[0],
@@ -532,22 +606,18 @@ export function App() {
   const totalSources = useMemo(() => topics.reduce((sum, topic) => sum + topic.document_count, 0), [topics]);
   const totalVectors = useMemo(() => topics.reduce((sum, topic) => sum + (topic.vector_count ?? 0), 0), [topics]);
   const suggestedPrompts = useMemo(() => {
-    if (!currentSearchTopic) {
-      return ["Create a topic first", "Upload source documents", "Return to Vector Database"];
-    }
-    if (!currentSearchTopic.document_count) {
-      return ["What should I upload first?", "Create a source checklist", "Explain this topic setup"];
-    }
+    if (!currentSearchTopic?.document_count) return [];
     return [
       "Summarize the source set",
       "List key facts with citations",
-      currentSearchTopic.usage_hint || "What should I read first?"
+      "Which sources support the answer?"
     ];
   }, [currentSearchTopic]);
 
   async function refreshTopics(nextTopic?: string) {
     const data = await getTopics();
     setTopics(data.topics);
+    if (!data.topics.length) setCreateTopicOpen(true);
     const fallback = data.topics[0]?.name ?? "default";
     const chosen = nextTopic && data.topics.some((topic) => topic.name === nextTopic) ? nextTopic : fallback;
     setUploadTopic((current) => (data.topics.some((topic) => topic.name === current) ? current : chosen));
@@ -565,24 +635,49 @@ export function App() {
   }
 
   useEffect(() => {
-    refreshTopics().catch((error) => setNotice(error.message));
+    refreshTopics().catch((error) => setNotice({ message: errorMessage(error), tone: "error" }));
   }, []);
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      refreshGovernance().catch((error) => setNotice(error.message));
+      refreshGovernance().catch((error) => setNotice({ message: errorMessage(error), tone: "error" }));
     }, 200);
     return () => window.clearTimeout(timeout);
   }, [tenant, user]);
 
   useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: "auto" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages, chatBusy]);
+
+  useEffect(() => {
     setClearArmed(false);
   }, [uploadTopic]);
+
+  useEffect(() => {
+    if (!clearArmed) return;
+    const timeout = window.setTimeout(() => setClearArmed(false), 8000);
+    return () => window.clearTimeout(timeout);
+  }, [clearArmed]);
+
+  async function handleRefreshTopics() {
+    setPendingAction("refresh");
+    try {
+      await refreshTopics();
+      setNotice({ message: "Knowledge topics and collection counts are up to date.", tone: "success" });
+    } catch (error) {
+      setNotice({ message: errorMessage(error), tone: "error" });
+    } finally {
+      setPendingAction(null);
+    }
+  }
 
   async function handleCreateTopic(event: FormEvent) {
     event.preventDefault();
     if (!newTopic.trim()) return;
-    setBusy(true);
+    setPendingAction("create");
     try {
       const data = await createTopic(newTopic, topicHint);
       setTopics(data.topics);
@@ -590,32 +685,36 @@ export function App() {
       setSearchTopic(data.topic.name);
       setNewTopic("");
       setTopicHint("");
-      setNotice(`Topic "${data.topic.title}" created.`);
+      setCreateTopicOpen(false);
+      setNotice({ message: `Topic "${data.topic.title}" created.`, tone: "success" });
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setNotice({ message: errorMessage(error), tone: "error" });
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
   async function handleUpload() {
     const files = fileRef.current?.files;
     if (!files?.length) return;
-    setBusy(true);
+    setPendingAction("upload");
     try {
       const data = await uploadDocuments(uploadTopic, files, tenant || "default");
       setTopics(data.topics);
-      setNotice(`Added ${formatCount(data.added, "file")} to ${data.topic.collection}.`);
+      setNotice({ message: `Added ${formatCount(data.added, "file")} to ${data.topic.collection}.`, tone: "success" });
       setSearchTopic(data.topic.name);
       if (data.failed.length) {
-        setNotice(`Upload issues: ${data.failed.map((item) => `${item.name}: ${item.error}`).join("; ")}`);
+        setNotice({
+          message: `Upload issues: ${data.failed.map((item) => `${item.name}: ${item.error}`).join("; ")}`,
+          tone: "error"
+        });
       }
       if (fileRef.current) fileRef.current.value = "";
       setSelectedFiles("No files selected");
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setNotice({ message: errorMessage(error), tone: "error" });
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
@@ -623,19 +722,22 @@ export function App() {
     if (!currentUploadTopic) return;
     if (!clearArmed) {
       setClearArmed(true);
-      setNotice(`Press Confirm clear to remove documents from ${currentUploadTopic.collection}.`);
+      setNotice({
+        message: `Confirm once more to remove all documents from ${currentUploadTopic.collection}.`,
+        tone: "info"
+      });
       return;
     }
-    setBusy(true);
+    setPendingAction("clear");
     try {
       const data = await clearTopic(uploadTopic);
       setTopics(data.topics);
-      setNotice(`Cleared documents from ${data.topic.collection}.`);
+      setNotice({ message: `Cleared documents from ${data.topic.collection}.`, tone: "success" });
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setNotice({ message: errorMessage(error), tone: "error" });
     } finally {
       setClearArmed(false);
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
@@ -646,7 +748,8 @@ export function App() {
     const nextMessages: ChatMessage[] = [...messages, { role: "user", content: message }];
     setMessages(nextMessages);
     setInput("");
-    setBusy(true);
+    setNotice(null);
+    setPendingAction("chat");
     try {
       const result = await sendChat(message, searchTopic, messages, {
         mode,
@@ -659,24 +762,23 @@ export function App() {
       setMessages([...nextMessages, { role: "assistant", content: result.answer }]);
       await refreshGovernance();
     } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      setMessages([...nextMessages, { role: "assistant", content: `Error: ${text}` }]);
-      setNotice(text);
+      setMessages(nextMessages);
+      setNotice({ message: errorMessage(error), tone: "error" });
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
   async function handleForget(memoryId: string) {
-    setBusy(true);
+    setPendingAction("memory");
     try {
       await forgetMemory(memoryId, tenant || "default", user || "anonymous");
       await refreshGovernance();
-      setNotice("Memory tombstoned and its recoverable payload removed.");
+      setNotice({ message: "Memory tombstoned and its recoverable payload removed.", tone: "success" });
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setNotice({ message: errorMessage(error), tone: "error" });
     } finally {
-      setBusy(false);
+      setPendingAction(null);
     }
   }
 
@@ -691,9 +793,12 @@ export function App() {
         { question: messages.filter((item) => item.role === "user").at(-1)?.content, policy_path: lastResult.policy_path }
       );
       setFeedbackSent(kind === "thumbs_up" ? "up" : "down");
-      setNotice("Feedback recorded as an observation. It will not change production directly.");
+      setNotice({
+        message: "Feedback recorded as an observation. It will not change production directly.",
+        tone: "success"
+      });
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
+      setNotice({ message: errorMessage(error), tone: "error" });
     }
   }
 
@@ -707,11 +812,11 @@ export function App() {
             </div>
             <div>
               <h1>Linki Workspace</h1>
-              <p>Manage vector collections and run grounded RAG workflows.</p>
+              <p>Ground answers in your sources, then inspect every decision.</p>
             </div>
           </div>
           <div className="status-group">
-            <div className="status-pill">
+            <div className="status-pill data">
               <Database size={15} />
               {formatCount(topics.length, "topic")}
             </div>
@@ -720,21 +825,23 @@ export function App() {
           </div>
         </header>
 
-        {notice ? (
-          <button type="button" className="notice" onClick={() => setNotice("")}>
-            {notice}
-          </button>
-        ) : null}
+        {notice ? <NoticeBanner notice={notice} onClose={() => setNotice(null)} /> : null}
 
         <Tabs.Root value={activeView} onValueChange={setActiveView} className="workspace-tabs">
           <Tabs.List className="workspace-tab-list" aria-label="Workspace sections">
-            <Tabs.Trigger value="vector">
-              <Database size={15} />
-              Vector Database
-            </Tabs.Trigger>
             <Tabs.Trigger value="rag">
               <MessageSquare size={15} />
-              RAG
+              <span>
+                <strong>Ask</strong>
+                <small>Query and inspect</small>
+              </span>
+            </Tabs.Trigger>
+            <Tabs.Trigger value="vector">
+              <Library size={15} />
+              <span>
+                <strong>Knowledge</strong>
+                <small>Topics and sources</small>
+              </span>
             </Tabs.Trigger>
           </Tabs.List>
 
@@ -742,8 +849,8 @@ export function App() {
             <section className="panel knowledge-panel" aria-labelledby="knowledge-heading">
               <div className="panel-header">
                 <div>
-                  <h2 id="knowledge-heading">Vector database</h2>
-                  <p>Create isolated topics, upload source files, and maintain collection contents.</p>
+                  <h2 id="knowledge-heading">Knowledge</h2>
+                  <p>Organize source sets into focused topics and keep their indexes current.</p>
                 </div>
                 <div className="panel-actions">
                   <button
@@ -754,12 +861,12 @@ export function App() {
                       setActiveView("rag");
                     }}
                   >
-                    Ask in RAG
+                    Ask this topic
                     <ArrowRight size={15} />
                   </button>
                   <IconTip label="Refresh topics and collection counts">
-                    <button type="button" className="icon-button" onClick={() => refreshTopics()} disabled={busy} aria-label="Refresh topics">
-                      <RefreshCw size={16} />
+                    <button type="button" className="icon-button" onClick={handleRefreshTopics} disabled={busy} aria-label="Refresh topics">
+                      <RefreshCw className={pendingAction === "refresh" ? "spin" : undefined} size={16} />
                     </button>
                   </IconTip>
                 </div>
@@ -792,32 +899,7 @@ export function App() {
                 </div>
 
                 <div className="workflow-stack">
-                  <div className="form-section">
-                    <div>
-                      <h3>Create a topic</h3>
-                      <p>Use topics to keep unrelated document sets and retrieval tools separate.</p>
-                    </div>
-                    <form className="topic-form" onSubmit={handleCreateTopic}>
-                      <label className="field">
-                        <span>Topic name</span>
-                        <input value={newTopic} onChange={(event) => setNewTopic(event.target.value)} placeholder="Product API docs" />
-                      </label>
-                      <label className="field">
-                        <span>Routing hint</span>
-                        <input
-                          value={topicHint}
-                          onChange={(event) => setTopicHint(event.target.value)}
-                          placeholder="Use for questions about API behavior"
-                        />
-                      </label>
-                      <button className="button secondary" disabled={busy || !newTopic.trim()}>
-                        <Plus size={16} />
-                        Create topic
-                      </button>
-                    </form>
-                  </div>
-
-                  <div className="form-section">
+                  <div className="form-section primary-workflow">
                     <div>
                       <h3>Add documents</h3>
                       <p>Upload PDF or Markdown files into the selected topic collection.</p>
@@ -839,7 +921,7 @@ export function App() {
                           type="file"
                           accept=".pdf,.md,.markdown"
                           multiple
-                          disabled={busy}
+                          disabled={busy || !currentUploadTopic}
                           onChange={(event) => {
                             const files = event.currentTarget.files;
                             if (!files?.length) {
@@ -850,19 +932,56 @@ export function App() {
                           }}
                         />
                       </label>
-                      <button type="button" className="button primary" onClick={handleUpload} disabled={busy || !currentUploadTopic}>
-                        <Upload size={16} />
-                        Upload files
+                      <button
+                        type="button"
+                        className="button primary"
+                        onClick={handleUpload}
+                        disabled={busy || !currentUploadTopic || selectedFiles === "No files selected"}
+                      >
+                        {pendingAction === "upload" ? <Loader2 className="spin" size={16} /> : <Upload size={16} />}
+                        {pendingAction === "upload" ? "Uploading" : "Upload files"}
                       </button>
                     </div>
                   </div>
+
+                  <details
+                    className="workflow-disclosure"
+                    open={createTopicOpen}
+                    onToggle={(event) => setCreateTopicOpen(event.currentTarget.open)}
+                  >
+                    <summary>
+                      <span>
+                        <strong>Create a new topic</strong>
+                        <small>Separate unrelated sources and retrieval routes.</small>
+                      </span>
+                      <ChevronDown size={16} aria-hidden="true" />
+                    </summary>
+                    <form className="topic-form" onSubmit={handleCreateTopic}>
+                      <label className="field">
+                        <span>Topic name</span>
+                        <input value={newTopic} onChange={(event) => setNewTopic(event.target.value)} placeholder="Product API docs" />
+                      </label>
+                      <label className="field">
+                        <span>Routing hint</span>
+                        <input
+                          value={topicHint}
+                          onChange={(event) => setTopicHint(event.target.value)}
+                          placeholder="Use for questions about API behavior"
+                        />
+                      </label>
+                      <button className="button secondary" disabled={busy || !newTopic.trim()}>
+                        {pendingAction === "create" ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+                        {pendingAction === "create" ? "Creating" : "Create topic"}
+                      </button>
+                    </form>
+                  </details>
 
                   <div className="maintenance-row danger-zone">
                     <div className="danger-copy">
                       <ShieldAlert size={17} />
                       <div>
-                        <h3>Danger zone</h3>
-                        <p>Clear documents only from the selected upload topic. Other topics stay untouched.</p>
+                        <h3>Clear selected topic</h3>
+                        <p>Remove its indexed documents; other topics stay untouched.</p>
                       </div>
                     </div>
                     <button
@@ -871,8 +990,8 @@ export function App() {
                       onClick={handleClearTopic}
                       disabled={busy || !currentUploadTopic}
                     >
-                      <Trash2 size={16} />
-                      {clearArmed ? "Confirm clear" : "Clear topic"}
+                      {pendingAction === "clear" ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}
+                      {pendingAction === "clear" ? "Clearing" : clearArmed ? "Confirm clear" : "Clear topic"}
                     </button>
                   </div>
                 </div>
@@ -885,16 +1004,27 @@ export function App() {
               <section className="panel chat-panel" aria-labelledby="ask-heading">
                 <div className="panel-header">
                   <div>
-                    <h2 id="ask-heading">RAG</h2>
+                    <h2 id="ask-heading">Ask your knowledge</h2>
                     <p>
                       {currentSearchTopic
-                        ? `Planning retrieval inside ${currentSearchTopic.title}, then checking evidence.`
-                        : "Choose a topic before asking a question."}
+                        ? `Ground every answer in ${currentSearchTopic.title}, with evidence you can inspect.`
+                        : "Set up a knowledge topic before asking your first question."}
                     </p>
                   </div>
-                  <button type="button" className="button secondary" onClick={() => setMessages([])} disabled={busy || !messages.length}>
-                    Clear chat
-                  </button>
+                  {messages.length ? (
+                    <button
+                      type="button"
+                      className="button quiet"
+                      onClick={() => {
+                        setMessages([]);
+                        setLastResult(null);
+                        setFeedbackSent(null);
+                      }}
+                      disabled={busy}
+                    >
+                      Clear chat
+                    </button>
+                  ) : null}
                 </div>
 
                 <TopicContext topic={currentSearchTopic} onManage={() => setActiveView("vector")} />
@@ -908,73 +1038,117 @@ export function App() {
                     hint={currentSearchTopic ? `Tool: ${currentSearchTopic.tool_name}` : undefined}
                   />
                   <ModeSelect value={mode} onChange={setMode} />
-                  <label className="field">
-                    <span>Tenant</span>
-                    <input
-                      value={tenant}
-                      onChange={(event) => setTenant(event.target.value)}
-                      placeholder="default"
-                      disabled={busy}
-                    />
-                    <small>Isolation and snapshot namespace</small>
-                  </label>
-                  <label className="field">
-                    <span>User</span>
-                    <input
-                      value={user}
-                      onChange={(event) => setUser(event.target.value)}
-                      placeholder="anonymous"
-                      disabled={busy}
-                    />
-                    <small>Personal memory and cache scope</small>
-                  </label>
                 </div>
 
-                <div className="messages" aria-live="polite">
+                <details className="scope-disclosure">
+                  <summary>
+                    <span className="scope-summary">
+                      <Settings2 size={15} aria-hidden="true" />
+                      <span>
+                        <strong>Query scope</strong>
+                        <small>{tenant || "default"} / {user || "anonymous"}</small>
+                      </span>
+                    </span>
+                    <ChevronDown size={16} aria-hidden="true" />
+                  </summary>
+                  <div className="scope-fields">
+                    <label className="field">
+                      <span>Tenant</span>
+                      <input
+                        value={tenant}
+                        onChange={(event) => setTenant(event.target.value)}
+                        placeholder="default"
+                        disabled={busy}
+                      />
+                      <small>Isolation and snapshot namespace</small>
+                    </label>
+                    <label className="field">
+                      <span>User</span>
+                      <input
+                        value={user}
+                        onChange={(event) => setUser(event.target.value)}
+                        placeholder="anonymous"
+                        disabled={busy}
+                      />
+                      <small>Personal memory and cache scope</small>
+                    </label>
+                  </div>
+                </details>
+
+                <div className="messages" ref={messagesRef} role="log" aria-live="polite" aria-busy={chatBusy}>
                   {messages.length === 0 ? (
                     <div className="welcome">
-                      <MessageSquare size={28} />
-                      <strong>Ask about your documents</strong>
-                      <span>Linki can split the question, refine weak searches, and verify the answer.</span>
-                      <div className="prompt-row" aria-label="Suggested prompts">
-                        {suggestedPrompts.map((prompt) => (
-                          <button
-                            type="button"
-                            key={prompt}
-                            onClick={() => {
-                              if (!currentSearchTopic || prompt === "Return to Vector Database") {
-                                setActiveView("vector");
-                                return;
-                              }
-                              setInput(prompt);
-                            }}
-                          >
-                            {prompt}
-                          </button>
-                        ))}
-                      </div>
+                      {currentSearchTopic?.document_count ? <MessageSquare size={26} /> : <Library size={26} />}
+                      <strong>
+                        {!currentSearchTopic
+                          ? "Build your first knowledge topic"
+                          : !currentSearchTopic.document_count
+                            ? `Add sources to ${currentSearchTopic.title}`
+                            : "Ask a question you can verify"}
+                      </strong>
+                      <span>
+                        {currentSearchTopic?.document_count
+                          ? "Linki can plan retrieval, refine weak searches, and verify the final answer."
+                          : "Upload PDF or Markdown sources so answers can be grounded and cited."}
+                      </span>
+                      {currentSearchTopic?.document_count ? (
+                        <div className="prompt-row" aria-label="Suggested prompts">
+                          {suggestedPrompts.map((prompt) => (
+                            <button type="button" key={prompt} onClick={() => setInput(prompt)}>
+                              {prompt}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <button type="button" className="button secondary welcome-action" onClick={() => setActiveView("vector")}>
+                          Open Knowledge
+                          <ArrowRight size={15} />
+                        </button>
+                      )}
                     </div>
                   ) : (
                     messages.map((message, index) => (
-                      <div className={`message ${message.role}`} key={`${message.role}-${index}`}>
+                      <div className={`message ${message.role}`} key={`${message.role}-${index}`} aria-label={`${message.role} message`}>
                         <div className="avatar">{message.role === "assistant" ? <Bot size={15} /> : "U"}</div>
                         <p>{message.content}</p>
                       </div>
                     ))
                   )}
+                  {chatBusy ? (
+                    <div className="message assistant thinking" role="status" aria-label="Linki is preparing an answer">
+                      <div className="avatar"><Bot size={15} /></div>
+                      <div className="thinking-copy">
+                        <strong>Planning and checking evidence…</strong>
+                        <span className="skeleton-line" />
+                        <span className="skeleton-line short" />
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <form className="composer" onSubmit={handleSend}>
-                  <Search size={18} />
-                  <input
-                    value={input}
-                    onChange={(event) => setInput(event.target.value)}
-                    placeholder="Ask about the selected topic"
-                    disabled={busy}
-                  />
-                  <button className="button primary" disabled={busy || !input.trim()}>
-                    {busy ? <Loader2 className="spin" size={16} /> : null}
-                    {busy ? "Sending" : "Send"}
+                  <div className="composer-input">
+                    <label className="sr-only" htmlFor="rag-question">Question</label>
+                    <textarea
+                      id="rag-question"
+                      value={input}
+                      rows={2}
+                      onChange={(event) => setInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                          event.preventDefault();
+                          event.currentTarget.form?.requestSubmit();
+                        }
+                      }}
+                      placeholder={currentSearchTopic?.document_count ? "Ask about the selected topic" : "Add source documents to start asking"}
+                      disabled={busy || !currentSearchTopic?.document_count}
+                      aria-describedby="composer-hint"
+                    />
+                    <small id="composer-hint">Enter to ask · Shift + Enter for a new line</small>
+                  </div>
+                  <button className="button primary send-button" disabled={busy || !input.trim() || !currentSearchTopic?.document_count}>
+                    {chatBusy ? <Loader2 className="spin" size={16} /> : <SendHorizontal size={16} />}
+                    {chatBusy ? "Working" : "Ask"}
                   </button>
                 </form>
                 {lastResult ? (
@@ -982,6 +1156,7 @@ export function App() {
                     <div>
                       <strong>{lastResult.policy_path.toUpperCase()}</strong>
                       <span>{lastResult.policy.reason || "Adaptive policy decision"}</span>
+                      {lastResult.shadow_policy?.path ? <small>Shadow: {lastResult.shadow_policy.path.toUpperCase()}</small> : null}
                     </div>
                     <div className="feedback-actions" aria-label="Rate this answer">
                       <span>{feedbackSent ? "Feedback recorded" : "Was this useful?"}</span>
@@ -1012,47 +1187,38 @@ export function App() {
                   </div>
                 </div>
                 <RunSummary result={lastResult} />
-                <Tabs.Root defaultValue="trace" className="tabs">
+                <Tabs.Root defaultValue="run" className="tabs">
                   <Tabs.List className="tabs-list">
-                    <Tabs.Trigger value="trace">Trace</Tabs.Trigger>
-                    <Tabs.Trigger value="plan">Plan</Tabs.Trigger>
-                    <Tabs.Trigger value="evidence">Evidence</Tabs.Trigger>
-                    <Tabs.Trigger value="sources">Sources</Tabs.Trigger>
-                    <Tabs.Trigger value="cost">Cost</Tabs.Trigger>
-                    <Tabs.Trigger value="memory">Memory</Tabs.Trigger>
-                    <Tabs.Trigger value="wiki">Wiki</Tabs.Trigger>
+                    <Tabs.Trigger value="run">Run</Tabs.Trigger>
+                    <Tabs.Trigger value="grounding">Grounding</Tabs.Trigger>
+                    <Tabs.Trigger value="context">Context</Tabs.Trigger>
                   </Tabs.List>
-                  <Tabs.Content value="trace" className="tab-panel">
-                    <TracePanel result={lastResult} />
+                  <Tabs.Content value="run" className="tab-panel inspector-stack">
+                    <InspectorSection title="Execution trace" description="Routing, retrieval, grading, and verification" defaultOpen>
+                      <TracePanel result={lastResult} />
+                    </InspectorSection>
+                    <InspectorSection title="Query plan" description="Sub-queries and their retrieval targets">
+                      <PlanRows result={lastResult} />
+                    </InspectorSection>
+                    <InspectorSection title="Cost and versions" description="Model calls, tokens, latency, and prompt versions">
+                      <CostPanel result={lastResult} />
+                    </InspectorSection>
                   </Tabs.Content>
-                  <Tabs.Content value="plan" className="tab-panel">
-                    <PlanRows result={lastResult} />
+                  <Tabs.Content value="grounding" className="tab-panel inspector-stack">
+                    <InspectorSection title="Evidence" description="Passages selected to support the answer" defaultOpen>
+                      <EvidencePanel result={lastResult} />
+                    </InspectorSection>
+                    <InspectorSection title="Citations" description="Source labels exposed in the answer">
+                      <SourcesPanel result={lastResult} />
+                    </InspectorSection>
                   </Tabs.Content>
-                  <Tabs.Content value="evidence" className="tab-panel">
-                    <EvidencePanel result={lastResult} />
-                  </Tabs.Content>
-                  <Tabs.Content value="sources" className="tab-panel">
-                    {lastResult?.citations.length ? (
-                      <div className="source-list">
-                        {lastResult.citations.map((source) => (
-                          <div className="source-item" key={`${source.index}-${source.chunk_id}`}>
-                            <code>[{source.index}]</code>
-                            <span>{source.label}</span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="empty">No citations yet. Sources appear after an answer is generated.</div>
-                    )}
-                  </Tabs.Content>
-                  <Tabs.Content value="cost" className="tab-panel">
-                    <CostPanel result={lastResult} />
-                  </Tabs.Content>
-                  <Tabs.Content value="memory" className="tab-panel">
-                    <MemoryPanel items={memoryItems} busy={busy} onForget={handleForget} />
-                  </Tabs.Content>
-                  <Tabs.Content value="wiki" className="tab-panel">
-                    <WikiPanel pages={wikiPages} snapshotId={wikiSnapshot} />
+                  <Tabs.Content value="context" className="tab-panel inspector-stack">
+                    <InspectorSection title="Memory" description="Auditable preferences in the active user scope" defaultOpen>
+                      <MemoryPanel items={memoryItems} busy={busy} onForget={handleForget} />
+                    </InspectorSection>
+                    <InspectorSection title="Wiki" description="Published tenant knowledge snapshots">
+                      <WikiPanel pages={wikiPages} snapshotId={wikiSnapshot} />
+                    </InspectorSection>
                   </Tabs.Content>
                 </Tabs.Root>
               </aside>
